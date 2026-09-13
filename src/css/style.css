@@ -12,7 +12,7 @@
 :root {
   --red: #eb684b;
   --red-dark: #d95a3e;
-  --red-soft: #f08a6b;
+
   --red-rgb: 235, 104, 75;
   --blue: #7bbbe3;
   --blue-rgb: 123, 187, 227;
@@ -228,6 +228,8 @@ input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border: 0; bo
 .asset-del:hover { color: var(--red); }
 .panel-foot { padding: 6px 10px; border-top: 1px solid var(--border); flex: none; }
 .empty-note { color: var(--text-dim); text-align: center; padding: 24px 8px; font-size: 11px; line-height: 1.7; }
+.empty-note.tight { padding: 12px 8px; }
+#st-slide svg { vertical-align: -1px; margin-right: 3px; }
 
 /* ════════════ 6. 通用面板/按钮（画板） ════════════ */
 .board { min-width: 0; }
@@ -676,6 +678,17 @@ textarea.sp-ctl { min-height: 34px; resize: vertical; line-height: 1.45; }
 .stage-zoom .divider { height: 14px; }
 .board-stage.panning { cursor: grabbing !important; }
 .board-stage.panning #ov { cursor: grabbing !important; }
+/* 工具属性面板（PS 式选项区）的小节标题与说明 */
+.tp-sect { font-size: 10.5px; letter-spacing: 1px; color: var(--text-dim); margin: 8px 0 2px; }
+.tp-note { font-size: 10.5px; color: var(--text-dim); line-height: 1.6; white-space: pre-line; padding: 2px 0; }
+.tp-more { margin-top: 6px; }
+.tp-more > summary { cursor: pointer; font-size: 10.5px; letter-spacing: 1px; color: var(--text-dim); user-select: none; }
+.tp-more > summary:hover { color: var(--text); }
+.tp-more[open] > summary { color: var(--text); margin-bottom: 2px; }
+/* 抓手 / 缩放工具：用系统光标（引擎此时不画自绘笔刷圈） */
+.board-stage.tool-hand #ov { cursor: grab; }
+.board-stage.tool-hand.panning #ov { cursor: grabbing; }
+.board-stage.tool-zoom #ov { cursor: zoom-in; }
 
 /* ── 画幅选择 ── */
 .size-select {
@@ -947,30 +960,5 @@ input[data-tag] {
 /* 缩略图取不到时留个可辨的占位，别是一块空白 */
 .thumb-miss { background: repeating-linear-gradient(45deg, rgba(0, 0, 0, .07) 0 6px, transparent 6px 12px); }
 
-/* ══════════ 20. 自由变换框（Ctrl+T） ══════════ */
-.xf-box {
-  position: absolute; z-index: 7; box-sizing: border-box;
-  border: 1px solid var(--red); cursor: move;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, .55) inset;
-}
-.xf-box.hidden { display: none; }
-.xf-h {
-  position: absolute; width: 9px; height: 9px; background: #fff;
-  border: 1px solid var(--red); border-radius: 2px; box-sizing: border-box;
-}
-.xf-h.nw { left: -5px; top: -5px; cursor: nwse-resize; }
-.xf-h.n { left: 50%; top: -5px; margin-left: -5px; cursor: ns-resize; }
-.xf-h.ne { right: -5px; top: -5px; cursor: nesw-resize; }
-.xf-h.e { right: -5px; top: 50%; margin-top: -5px; cursor: ew-resize; }
-.xf-h.se { right: -5px; bottom: -5px; cursor: nwse-resize; }
-.xf-h.s { left: 50%; bottom: -5px; margin-left: -5px; cursor: ns-resize; }
-.xf-h.sw { left: -5px; bottom: -5px; cursor: nesw-resize; }
-.xf-h.w { left: -5px; top: 50%; margin-top: -5px; cursor: ew-resize; }
-
-/* 素材条目上的「贴入」按钮 */
-.asset-put {
-  flex: none; font: inherit; font-size: 10px; cursor: pointer;
-  background: rgba(var(--red-rgb), .14); color: var(--text);
-  border: 1px solid rgba(var(--red-rgb), .35); border-radius: 6px; padding: 2px 6px;
-}
-.asset-put:hover { background: rgba(var(--red-rgb), .3); }
+/* （变换框由引擎 drawXfHandles 在 #ov 上自绘；原 .xf-box/.xf-h 规则与
+   「贴入」按钮 .asset-put 已随死代码清理删除） */

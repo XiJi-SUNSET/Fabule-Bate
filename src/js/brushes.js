@@ -17,28 +17,6 @@
   /* 笔刷条只列绘制类笔刷：橡皮/填充/涂抹等属于工具，在工具栏与轮盘里 */
   const PAINT_BRUSHES = ['pen', 'pencil', 'marker', 'gouache', 'airbrush'];
 
-  /* 参数区滑杆元数据：
-     field 为引擎参数名（与 P 字段一一对应）；
-     toUi / fromUi 负责 UI 整数与引擎浮点（含 -1 哨兵）的换算。 */
-  const PARAM_META = {
-    flow: {
-      label: '流量', field: 'flow', min: 0, max: 100, step: 1,
-      toUi: v => Math.round((v == null ? 1 : v) * 100), fromUi: v => v / 100,
-    },
-    hardness: {
-      label: '硬度', field: 'hardness', min: 0, max: 100, step: 1,
-      toUi: v => Math.round((v == null ? 0.55 : v) * 100), fromUi: v => v / 100,
-    },
-    grain: {
-      label: '颗粒', field: 'grain', min: 0, max: 100, step: 1,
-      toUi: v => Math.round((v == null ? 0 : v) * 100), fromUi: v => v / 100,
-    },
-    scatter: {
-      label: '散布', field: 'spread', min: 0, max: 300, step: 5,
-      toUi: v => Math.round((v == null ? 0 : v) * 100), fromUi: v => v / 100,
-    },
-  };
-
   /* 出厂参数：引擎当前 P 全量默认值 + 该笔刷在 BRUSHES 里的预设覆盖 */
   function defaultParams(id) {
     const e = E();
@@ -66,13 +44,8 @@
         label: e.BRUSHES[id].name || id,
         icon: e.BRUSHES[id].icon || '',
         key: e.BRUSHES[id].key || '',
-        params: ['flow', 'hardness', 'grain', 'scatter'],
       }));
     },
-
-    get(id) { return MTG.brushes.list.find(b => b.id === id) || null; },
-
-    get paramMeta() { return PARAM_META; },
 
     /* 载入参数：持久化的用户值覆盖出厂预设 */
     loadParams(id) {
@@ -91,15 +64,6 @@
       for (const k of Object.keys(obj)) plain[k] = obj[k];
       const all = p.get('brushParams') || {};
       all[id] = Object.assign({}, all[id], plain);
-      p.set('brushParams', all);
-    },
-
-    /* 重置某支笔到出厂预设 */
-    resetBrush(id) {
-      const p = prefs();
-      if (!p) return;
-      const all = p.get('brushParams') || {};
-      delete all[id];
       p.set('brushParams', all);
     },
   };

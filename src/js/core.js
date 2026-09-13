@@ -7,8 +7,6 @@
 
   /* ── 常量 ── */
   MTG.PROJECT_FILE = 'montage.json';
-  MTG.BOARD_W = 1280;
-  MTG.BOARD_H = 720;
   MTG.AUDIO_EXT = ['mp3', 'wav', 'm4a', 'ogg', 'flac', 'aac'];
   MTG.IMAGE_EXT = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'];
 
@@ -121,6 +119,7 @@
     p.tagOptions = p.tagOptions || {};
     if (!Array.isArray(p.tagOptions[key])) {
       p.tagOptions[key] = (f && f.options) ? f.options.slice() : [];
+      if (MTG.markDirty) MTG.markDirty();   // 读操作有副作用（回写默认值）→ 必须标记落盘（L-4）
     }
     return p.tagOptions[key];
   };
@@ -254,11 +253,6 @@
     }
   };
 
-  MTG.ensureClipMeta = function (clip) {
-    if (clip && !clip.meta) clip.meta = {};
-    return clip ? clip.meta : null;
-  };
-
   /* ── 状态 ── */
   MTG.state = {
     project: null,        // 工程数据（时间轴 + 素材引用）；未打开工程时为 null
@@ -385,5 +379,14 @@
     let end = 10;
     p.clips.forEach(c => { end = Math.max(end, (c.start || 0) + (c.dur || 1)); });
     return Math.max(end + 10, 20);
+  };
+  /* 真实内容末端（最后片段的结束时刻）：播放到此即停。
+     projectEnd 是可视长度（尾部多留 10 秒方便往后拖放），拿它做播放终点会多播 10 秒静音（L-2） */
+  MTG.contentEnd = function () {
+    const p = MTG.state.project;
+    if (!p) return 0;
+    let end = 0;
+    p.clips.forEach(c => { end = Math.max(end, (c.start || 0) + (c.dur || 1)); });
+    return end;
   };
 })();

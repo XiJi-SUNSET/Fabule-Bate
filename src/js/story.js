@@ -17,6 +17,7 @@
     idx: 0,
     shots: [],
     timer: 0,
+    _showToken: 0,
 
     /* ── 渲染卡片 ── */
     render() {
@@ -238,11 +239,157 @@
         el.classList.toggle('selected', MTG.state.selectedClipIds.has(el.dataset.id)));
     },
 
+    /* ── 导出（基于 UI 模型：与屏幕上的故事板一致；M-13 收尾） ──
+       桌面版经主进程系统对话框保存（export:storyPng / storyPdf），浏览器版直接下载。 */
+    async buildPng() {
+      const shots = MTG.board.orderedShots();
+      const p = MTG.state.project;
+      if (!p || !shots.length) { MTG.toast('还没有镜头，先做几张再导出', true); return null; }
+      const dw = p.boardW || 1280, dh = p.boardH || 720;
+      const perRow = Math.min(4, shots.length);
+      const cellW = 320, gap = 14, pad = 24, headH = 84, textH = 88;
+      const cellH = Math.round(cellW * dh / dw);
+      const rows = Math.ceil(shots.length / perRow);
+      const W = pad * 2 + perRow * cellW + (perRow - 1) * gap;
+      const H = headH + pad + rows * (cellH + textH + gap);
+      const cvs = document.createElement('canvas');
+      cvs.width = W; cvs.height = H;
+      const g = cvs.getContext('2d');
+      g.fillStyle = '#17161d'; g.fillRect(0, 0, W, H);
+      g.fillStyle = '#f5f0ea';
+      g.font = '600 24px system-ui, "Microsoft YaHei", sans-serif';
+      g.fillText(p.name || '故事板', pad, 40);
+      g.fillStyle = '#8b8798';
+      g.font = '400 13px system-ui, "Microsoft YaHei", sans-serif';
+      g.fillText(shots.length + ' 镜 · ' + dw + '×' + dh + ' · ' + new Date().toLocaleString('zh-CN'), pad, 64);
+      const imgs = await Promise.all(shots.map(async (s) => {
+        const b = s.boardId ? MTG.findBoard(s.boardId) : null;
+        if (!b) return null;
+        const u = await MTG.board.thumbUrl(b);
+        if (!u) return null;
+        return new Promise((res) => {
+          const im = new Image();
+          im.onload = () => res(im);
+          im.onerror = () => res(null);
+          im.src = u;
+        });
+      }));
+      for (let i = 0; i < shots.length; i++) {
+        const s = shots[i], m = s.meta || {};
+        const cx = pad + (i % perRow) * (cellW + gap);
+        const cy = headH + Math.floor(i / perRow) * (cellH + textH + gap);
+        g.fillStyle = '#0d0c12'; g.fillRect(cx, cy, cellW, cellH);
+        const img = imgs[i];
+        if (img && img.width) {
+          const k = Math.min(cellW / img.width, cellH / img.height);
+          const w = Math.round(img.width * k), h = Math.round(img.height * k);
+          g.drawImage(img, cx + ((cellW - w) >> 1), cy + ((cellH - h) >> 1), w, h);
+        } else {
+          g.fillStyle = '#4a4656';
+          g.font = '400 13px system-ui, "Microsoft YaHei", sans-serif';
+          g.textAlign = 'center';
+          g.fillText('（空镜）', cx + cellW / 2, cy + cellH / 2 + 4);
+          g.textAlign = 'left';
+        }
+        g.strokeStyle = '#2c2a36'; g.strokeRect(cx + 0.5, cy + 0.5, cellW - 1, cellH - 1);
+        g.fillStyle = 'rgba(235,104,75,.92)'; g.fillRect(cx, cy, 30, 22);
+        g.fillStyle = '#fff';
+        g.font = '600 13px system-ui, sans-serif';
+        g.fillText(String(i + 1), cx + (i < 9 ? 9 : 5), cy + 16);
+        g.fillStyle = '#d7d3e0';
+        g.font = '400 13px system-ui, "Microsoft YaHei", sans-serif';
+        wrapText(g, [m.content, m.dialogue, m.remark].filter(Boolean).join('　'), cx, cy + cellH + 22, cellW, 18, 3);
+      }
+      return cvs.toDataURL('image/png');
+    },
+
+    async buildHtml() {
+      const shots = MTG.board.orderedShots();
+      const p = MTG.state.project;
+      if (!p || !shots.length) { MTG.toast('还没有镜头，先做几张再导出', true); return null; }
+      const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+      const tiles = [];
+      for (let i = 0; i < shots.length; i++) {
+        const s = shots[i], m = s.meta || {};
+        const b = s.boardId ? MTG.findBoard(s.boardId) : null;
+        let du = '';
+        if (b) {
+          try {
+            const u = await MTG.board.thumbUrl(b);
+            if (u) {
+              const blob = await (await fetch(u)).blob();
+              du = await new Promise((res) => {
+                const r = new FileReader();
+                r.onload = () => res(String(r.result));
+                r.onerror = () => res('');
+                r.readAsDataURL(blob);
+              });
+            }
+          } catch (_) {}
+        }
+        const text = [m.content, m.dialogue, m.remark].filter(Boolean).join('　');
+        tiles.push('<figure class="tile">'
+          + (du ? '<img src="' + du + '" alt="">' : '<div class="ph">（空镜）</div>')
+          + '<figcaption><b>' + (i + 1) + '</b>' + esc(text) + '</figcaption></figure>');
+      }
+      return '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
+        + '<title>' + esc(p.name || '故事板') + '</title>'
+        + '<style>'
+        + 'body{margin:0;padding:12mm;background:#fff;color:#16151c;font:13px/1.5 system-ui,"Microsoft YaHei",sans-serif}'
+        + 'h1{font-size:18px;margin:0 0 3mm}'
+        + '.meta{color:#888;font-size:11px;margin:0 0 5mm}'
+        + '.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:5mm}'
+        + '.tile{margin:0;border:1px solid #ddd;border-radius:3px;overflow:hidden;page-break-inside:avoid}'
+        + '.tile img{display:block;width:100%;background:#fff}'
+        + '.tile .ph{height:38mm;display:flex;align-items:center;justify-content:center;color:#aaa}'
+        + 'figcaption{padding:2mm;font-size:11px;color:#444}'
+        + 'figcaption b{color:#d33}'
+        + '</style></head><body>'
+        + '<h1>' + esc(p.name || '故事板') + '</h1>'
+        + '<p class="meta">' + shots.length + ' 镜 · ' + (p.boardW || 1280) + '×' + (p.boardH || 720) + '</p>'
+        + '<div class="grid">' + tiles.join('') + '</div>'
+        + '</body></html>';
+    },
+
+    async exportPng() {
+      const dataUrl = await S.buildPng();
+      if (!dataUrl) return;
+      const exp = window.fabula && window.fabula.exp;
+      if (exp && exp.storyPng) {
+        try {
+          const r = await exp.storyPng(dataUrl);
+          if (r && r.ok) MTG.toast('已导出故事板 PNG：' + r.path);
+          else if (!(r && r.canceled)) MTG.toast('导出失败：' + ((r && r.error) || '未知错误'), true);
+        } catch (e) { MTG.toast('导出失败：' + ((e && e.message) || e), true); }
+        return;
+      }
+      const blob = await (await fetch(dataUrl)).blob();
+      MTG.util.download(((MTG.state.project && MTG.state.project.name) || 'story') + '-故事板.png', blob);
+    },
+
+    async exportPdf() {
+      const html = await S.buildHtml();
+      if (!html) return;
+      const exp = window.fabula && window.fabula.exp;
+      if (exp && exp.storyPdf) {
+        try {
+          const r = await exp.storyPdf(html);
+          if (r && r.ok) MTG.toast('已导出故事板 PDF：' + r.path);
+          else if (!(r && r.canceled)) MTG.toast('导出失败：' + ((r && r.error) || '未知错误'), true);
+        } catch (e) { MTG.toast('导出失败：' + ((e && e.message) || e), true); }
+        return;
+      }
+      MTG.util.download(((MTG.state.project && MTG.state.project.name) || 'story') + '-故事板.html',
+        new Blob([html], { type: 'text/html' }));
+    },
+
     /* ── 放映 ── */
     play() {
       S.shots = MTG.board.orderedShots();
       if (!S.shots.length) { MTG.toast('还没有镜头可以放映', true); return; }
       S.sliding = true;
+      S.paused = false;                 // 上次暂停退出后，新一轮放映必须重新开始计时（M-17）
       S.idx = 0;
       document.getElementById('story-slide').classList.remove('hidden');
       S.show();
@@ -252,6 +399,7 @@
 
     stop() {
       S.sliding = false;
+      S.paused = false;                 // 暂停状态不跨会话泄漏（M-17）
       clearTimeout(S.timer);
       const el = document.getElementById('story-slide');
       if (el) el.classList.add('hidden');
@@ -283,7 +431,8 @@
       if (!s.boardId) { img.removeAttribute('src'); return; }
       const b = MTG.findBoard(s.boardId);
       if (!b) { img.removeAttribute('src'); return; }
-      MTG.board.thumbUrl(b).then(u => { if (u) img.src = u; });
+      const tk = ++S._showToken;        // 快速切镜：慢 promise 回来不能覆盖新镜画面（L-5）
+      MTG.board.thumbUrl(b).then(u => { if (u && tk === S._showToken) img.src = u; });
     },
 
     step(d) {
@@ -323,6 +472,10 @@
       });
       const txt = $('st-text');
       if (txt) txt.onchange = () => { S.showText = txt.checked; S.render(); };
+      const ep = $('st-export-png');
+      if (ep) ep.onclick = () => S.exportPng();
+      const ed = $('st-export-pdf');
+      if (ed) ed.onclick = () => S.exportPdf();
 
       document.addEventListener('keydown', e => {
         if (!S.sliding) return;
@@ -333,4 +486,18 @@
       });
     }
   });
+
+  /* 导出用的文本换行：按 canvas 实测宽度折行，超出行数截断 */
+  function wrapText(g, text, x, y, maxW, lineH, maxLines) {
+    let line = '', n = 0;
+    for (const ch of String(text)) {
+      const t = line + ch;
+      if (g.measureText(t).width > maxW && line) {
+        g.fillText(line, x, y + n * lineH);
+        if (++n >= maxLines) return;
+        line = ch;
+      } else line = t;
+    }
+    if (line) g.fillText(line, x, y + n * lineH);
+  }
 })();

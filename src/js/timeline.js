@@ -39,10 +39,8 @@
         }
       }, { passive: false });
 
-      /* 头部与内容垂直滚动同步 */
-      TL.el.scroll.addEventListener('scroll', () => {
-        TL.el.heads.style.transform = 'translateY(' + -TL.el.scroll.scrollTop + 'px)';
-      });
+      /* 头部与内容垂直滚动同步由 syncHeadScroll() 统一负责（L-3 修复后的
+         双机制叠加位移问题：旧监听器已删除，N-A4） */
 
       /* 框选矩形 */
       TL.marquee = document.createElement('div');
@@ -108,7 +106,7 @@
         // 未打开工程：空状态
         TL.contentW = Math.max(TL.el.scroll.clientWidth, 600);
         TL.el.content.style.width = TL.contentW + 'px';
-        TL.el.heads.innerHTML = '<div class="empty-note" style="padding:12px 8px">未打开工程<br>点左上「打开文件夹」<br>选择（或新建）工程文件夹</div>';
+        TL.el.heads.innerHTML = '<div class="empty-note tight">未打开工程<br>点左上「打开文件夹」<br>选择（或新建）工程文件夹</div>';
         TL.el.tracks.innerHTML = '';
         TL.drawRuler();
         TL.updatePlayhead();
@@ -201,7 +199,13 @@
        否则下面的轨道头会被裁掉，看着像「只显示前几条轨」。 */
     syncHeadScroll() {
       const apply = () => {
-        if (TL.el.heads && TL.el.scroll) TL.el.heads.scrollTop = TL.el.scroll.scrollTop;
+        if (!TL.el.heads || !TL.el.scroll) return;
+        /* 用 transform 平移轨道头内容跟随右侧滚动：overflow:hidden 容器的 scrollTop
+           在本布局下不生效（此前是纯死操作，L-3）。spacer 与列表一起平移 = 原来的整列滚动语义。 */
+        const y = TL.el.scroll.scrollTop;
+        TL.el.heads.querySelectorAll(':scope > *').forEach(el => {
+          el.style.transform = y ? 'translateY(-' + y + 'px)' : '';
+        });
       };
       apply();                                  // 每次重绘后先对齐一次
       if (TL._headSync) return;

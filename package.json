@@ -7,7 +7,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/project.test.mjs test/shots-geometry.test.mjs test/mcp-server.test.mjs test/prefs.test.mjs test/actions.test.mjs",
+    "test": "node --test \"test/*.test.mjs\"",
     "mcp": "node agent/mcp-server.mjs"
   },
   "devDependencies": {

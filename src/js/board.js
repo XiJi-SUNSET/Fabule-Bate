@@ -46,12 +46,8 @@
   const B = (MTG.board = {
     /* ================= 数据属性 ================= */
     dirty: false,
-    drawing: false,
     spaceDownAt: 0,
     spacePanned: false,
-    strokeTool: null,
-    lassoing: false,
-    selDrag: null,
     refImg: null,
     onion: { on: true, before: 1, after: 1, opacity: 45 },
 
@@ -61,6 +57,7 @@
     _btoken: 0,          /* 底图合成竞态令牌 */
     _silent: false,      /* 程序性变更期间置位：引擎的 notifyDirty 不落盘标记 */
     _idle: true,         /* 播放头不在任何分镜帧上：画布不吃笔（__fabulaWorkspace 钩子拦下） */
+    _spaceHeld: false,   /* 空格平移的宿主侧状态位：引擎 panMode 只写不读，必须自己记 */
     thumbCache: new Map(),
     onionCache: new Map(),
     onionLoading: new Set(),
@@ -81,8 +78,14 @@
 
     get xf() { try { return window.__paintlab.xfState.on ? { on: true } : null; } catch (_) { return null; } },
 
-    get spaceHeld() { try { return !!window.__paintlab.panMode; } catch (_) { return false; } },
-    set spaceHeld(v) { const e = E(); if (e && e.setPanMode) e.setPanMode(!!v); },
+    /* 空格平移：状态自己记（__paintlab 没暴露 panMode，之前 getter 恒 false
+       → keyup 判断失败 → 引擎 spaceDown 永不复位 → "抓手卡死"） */
+    get spaceHeld() { return !!B._spaceHeld; },
+    set spaceHeld(v) {
+      B._spaceHeld = !!v;
+      const e = E();
+      if (e && e.setPanMode) e.setPanMode(!!v);
+    },
 
     get showRef() { return !!B._showRef; },
     set showRef(v) {
@@ -113,7 +116,7 @@
         const hex = '#' + h(rgb[0]) + h(rgb[1]) + h(rgb[2]);
         MTG.state.color = hex;
         if (MTG.picker && MTG.picker.set) MTG.picker.set(hex);
-        UI('syncColor');
+        UI('syncColor', hex);
       };
       e.onToolChange = (t) => B._syncToolUi(t);
       e.onLayerChange = (id) => {
@@ -125,9 +128,10 @@
       const p = MTG.state.project;
       if (p && p.boardW && p.boardH) { W = p.boardW; H = p.boardH; }
       B._silent = true;
-      e.setDocSize(W, H, { keepContent: false, fit: false });
-      e.clearForShot();
-      B._silent = false;
+      try {
+        e.setDocSize(W, H, { keepContent: false, fit: false });
+        e.clearForShot();
+      } finally { B._silent = false; }
       e.fit();
       B._syncZoomLabel();
       B._syncToolUi(e.tool());
@@ -177,7 +181,7 @@
       const e = E();
       const t = e ? e.tool() : 'pen';
       const kind = BRUSH_IDS.indexOf(t) >= 0 ? 'brush' : 'other';
-      return { id: t, kind, params: kind === 'brush' ? ['flow', 'hardness', 'grain', 'scatter'] : [] };
+      return { id: t, kind };
     },
 
     /* ================= 视图 ================= */
@@ -199,10 +203,9 @@
       e.zoomAt(r.left + r.width / 2, r.top + r.height / 2, f);
     },
     zoom100() { const e = E(); if (e) e.zoom100(); },
-    panBy(dx, dy) { const e = E(); if (e) e.panBy(dx, dy); },
 
     /* 引擎自绘光标与线宽环，这里只保留"空场"光标态 */
-    syncCursor() {}, paint() {}, refreshRing() {}, hideRing() {}, updateRing() {},
+    syncCursor() {}, paint() {}, refreshRing() {},
     setIdle(on) {
       B._idle = !!on;
       const el = document.getElementById('stage');
@@ -215,8 +218,8 @@
       if (!e) return;
       W = Math.round(w); H = Math.round(h);
       B._silent = true;
-      e.setDocSize(W, H, { keepContent: true, fit: false });
-      B._silent = false;
+      try { e.setDocSize(W, H, { keepContent: true, fit: false }); }
+      finally { B._silent = false; }
       B.rebuildBackdrop();
     },
     get docW() { return W; },
@@ -430,8 +433,8 @@
       MTG.state.currentBoardId = null;
       const e = E();
       B._silent = true;
-      if (e) { B.xfEnd(); e.clearForShot(); }
-      B._silent = false;
+      try { if (e) { B.xfEnd(); e.clearForShot(); } }
+      finally { B._silent = false; }
       B.dirty = false;
       B.rebuildBackdrop();                       // 参考层保留显示，洋葱皮不再有对象
       MTG.ui && MTG.ui.syncBoardMeta && MTG.ui.syncBoardMeta();
@@ -458,12 +461,20 @@
       if (!e) return;
       /* 载入串行化：快切帧时旧载入必须先落定，避免慢解码最后覆盖画面 */
       const job = (B._loadQueue || Promise.resolve()).then(async () => {
+        /* 排队期间已切帧/切工程：这一载入作废，防旧工程画面落进新画布（N-B2） */
+        if (tk !== B._token) return;
         B._silent = true;
-        e.clearForShot();                        // 图层 / 掩膜 / 历史一起复位，跨帧不残留
-        await e.loadImage(blob, { layer: 'fg', mode: 'stretch', clearUndo: true, fit: false });
-        B._silent = false;
+        try {
+          e.clearForShot();                      // 图层 / 掩膜 / 历史一起复位，跨帧不残留
+          await e.loadImage(blob, { layer: 'fg', mode: 'stretch', clearUndo: true, fit: false });
+        } finally {
+          B._silent = false;                     // 载入异常也必须复位：否则后续笔迹的脏标记被吞、静默丢失
+        }
       });
-      B._loadQueue = job.catch(() => {});
+      B._loadQueue = job.catch((err) => {
+        console.error('[board] 载帧失败', err);
+        MTG.toast && MTG.toast('载帧失败：' + ((err && err.message) || err), true);
+      });
       await job.catch(() => {});
       if (tk !== B._token) return;
       MTG.state.currentBoardId = id;
@@ -497,11 +508,19 @@
       const b = MTG.findBoard(MTG.state.currentBoardId);
       if (!b) return;
       const blob = await B.toBlob();
-      if (!blob) return;
-      await MTG.storage.writeFile(b.path, blob).catch(() => {});
+      if (!blob) return false;
+      try {
+        await MTG.storage.writeFile(b.path, blob);
+      } catch (err) {
+        /* 写盘失败：保留 dirty 等下一轮（autosave/切帧/退出）重试；
+           不再静默吞掉 —— 此前调用方照报"已保存"，帧文件其实没写 */
+        MTG.toast && MTG.toast('帧存盘失败，稍后重试：' + ((err && err.message) || err), true);
+        return false;
+      }
       B.onionCache.delete(b.id);
       B.dropThumb(b.id);                   // 内容变了，旧缩略图 URL 作废
       B.dirty = false;
+      return true;
     },
 
     dropThumb(id) {
@@ -521,8 +540,9 @@
       return u;
     },
 
-    /* 画板当前内容丢弃（从磁盘重读当前帧）——绘画弹窗「取消」用 */
-    async reloadCurrent() {
+    /* 画板当前内容丢弃（从磁盘重读当前帧）——绘画弹窗「取消」用。
+       keepUndo=true 保留撤销栈（外部刷新画面时不该清掉用户的撤销历史）。 */
+    async reloadCurrent(keepUndo) {
       const id = MTG.state.currentBoardId;
       if (!id) return;
       const b = MTG.findBoard(id);
@@ -531,9 +551,10 @@
       if (!e) return;
       const blob = await MTG.storage.readBlob(b.path);
       B._silent = true;
-      e.clearForShot();
-      if (blob) await e.loadImage(blob, { layer: 'fg', mode: 'stretch', clearUndo: true, fit: false });
-      B._silent = false;
+      try {
+        e.clearForShot();
+        if (blob) await e.loadImage(blob, { layer: 'fg', mode: 'stretch', clearUndo: !keepUndo, fit: false });
+      } finally { B._silent = false; }
       B.dirty = false;
     },
 
@@ -644,7 +665,8 @@
     async saveFrame() {
       const b = MTG.findBoard(MTG.state.currentBoardId);
       if (!b) { MTG.toast('播放头不在任何分镜帧上', true); return; }
-      await B.flush();
+      const ok = await B.flush();
+      if (ok === false) return;              // 写盘失败已提示，不再谎报"已保存"
       MTG.markDirty();
       MTG.toast('已保存：' + b.name);
     },

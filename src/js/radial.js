@@ -71,12 +71,16 @@
       let s = '', ic = '';
       Rad.items.forEach((a, i) => {
         s += '<path class="rs" data-i="' + i + '" d="' + sectorPath(i) + '"></path>';
-        const p = polar((R + R0) / 2, i * STEP);
-        ic += '<i class="ri" data-i="' + i + '" style="left:' + (p[0] - 11) + 'px;top:' + (p[1] - 11) + 'px">' +
-              (a.icon || '') + '</i>';
+        ic += '<i class="ri" data-i="' + i + '">' + (a.icon || '') + '</i>';
       });
       Rad.svg.innerHTML = s;
       Rad.icons.innerHTML = ic;
+      /* 图标定位走 CSSOM 赋值：CSP 不收 innerHTML 串里的内联 style（会被整条拒绝） */
+      Rad.icons.querySelectorAll('.ri').forEach(el => {
+        const p = polar((R + R0) / 2, (+el.dataset.i) * STEP);
+        el.style.left = (p[0] - 11) + 'px';
+        el.style.top = (p[1] - 11) + 'px';
+      });
       Rad.hub.textContent = '';
       return true;
     },

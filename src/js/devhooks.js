@@ -92,7 +92,7 @@
   }
   function shotText(s) {
     const d = s.description || {};
-    return [d.content, d.dialogue, s.note].filter(Boolean).join('　');
+    return [d.content, d.dialogue, d.notes].filter(Boolean).join('　');   // 备注在 description.notes（原 s.note 恒 undefined，L-18）
   }
 
   /* ══════════ 故事板导出（fabula 工程模型：shots） ══════════ */
@@ -258,6 +258,171 @@
       } finally {
         try { MTG.board.setIdle(true); } catch (_) {}
       }
+      return JSON.stringify(out);
+    },
+
+    /* 涂抹自检：先 pen 画一条竖线，再 smudge 横向涂抹一笔。
+       验证：两笔都入撤销栈（步深 +2）、工具正确切换、不抛错。
+       并采样涂抹前/后同一行像素（RGBA），用于判读拖拽是否连续无分层。 */
+    async smudge() {
+      const out = { steps: [] };
+      try {
+        MTG.board.setIdle(false);
+        const engine = window.__fabulaEngine;
+        const ov = $('ov'), r = ov.getBoundingClientRect();
+        const pev = (type, x, y, opts) => ov.dispatchEvent(new PointerEvent(type, Object.assign({
+          bubbles: true, cancelable: true, composed: true,
+          pointerId: 7, pointerType: 'mouse', isPrimary: true,
+          button: 0, buttons: type === 'pointerup' ? 0 : 1, pressure: 0.75,
+          clientX: x, clientY: y,
+        }, opts || {})));
+        const undoCount = () => (window.__paintlab && window.__paintlab.stats ? window.__paintlab.stats.undo : -1);
+        const toDoc = (cx, cy) => {
+          const view = engine.getView();
+          const glc = $('gl'), gr = glc.getBoundingClientRect();
+          const k = glc.width / gr.width;
+          return {
+            x: ((cx - gr.left) * k - view.x) / view.scale,
+            y: ((cy - gr.top) * k - view.y) / view.scale,
+            k, scale: view.scale,
+          };
+        };
+        /* 读文档坐标下某一行像素的 alpha（n 点采样），用于判读拖拽条的连续性 */
+        const readRowAlpha = (clientY, cx0, cx1, n) => {
+          const a = toDoc(cx0, clientY), b = toDoc(cx1, clientY);
+          const res = window.__paintlab.readAlpha(a.x, a.y, b.x - a.x, 1);
+          const arr = [];
+          for (let i = 0; i < n; i++) {
+            const p = Math.round(i * (res.w - 1) / (n - 1)) * 4;
+            arr.push(res.raw[p + 3]);
+          }
+          return arr;
+        };
+        /* 同一路径上读一列（判断"层"是否沿垂直方向出现） */
+        const readColAlpha = (clientX, cy0, cy1, n) => {
+          const a = toDoc(clientX, cy0), b = toDoc(clientX, cy1);
+          const res = window.__paintlab.readAlpha(a.x, a.y, 1, b.y - a.y);
+          const arr = [];
+          for (let i = 0; i < n; i++) {
+            const p = Math.round(i * (res.h - 1) / (n - 1)) * res.w * 4;
+            arr.push(res.raw[p + 3]);
+          }
+          return arr;
+        };
+        /* 1. pen 竖线（过画面中心，给涂抹留素材） */
+        engine.setTool('pen');
+        const xm = r.left + r.width * 0.5;
+        const ya = r.top + r.height * 0.2, yb = r.top + r.height * 0.8;
+        pev('pointerdown', xm, ya);
+        for (let i = 1; i <= 12; i++) pev('pointermove', xm, ya + (yb - ya) * i / 12);
+        pev('pointerup', xm, yb);
+        engine.commitStroke();
+        out.line = engine.canUndo();
+        out.lineUndo = undoCount();
+        out.steps.push('line');
+        const xa = r.left + r.width * 0.3, xb = r.left + r.width * 0.7, ym = r.top + r.height * 0.5;
+        const sx0 = r.left + r.width * 0.40, sx1 = r.left + r.width * 0.60;
+        out.before = readRowAlpha(ym, sx0, sx1, 96);
+        out.colBefore = readColAlpha(r.left + r.width * 0.52, r.top + r.height * 0.38, r.top + r.height * 0.62, 96);
+        /* 2. smudge 横涂（穿过竖线中点） */
+        engine.setTool('smudge');
+        pev('pointerdown', xa, ym);
+        for (let i = 1; i <= 24; i++) pev('pointermove', xa + (xb - xa) * i / 24, ym);
+        pev('pointerup', xb, ym);
+        engine.commitStroke();
+        out.smudgeUndo = undoCount();
+        out.smudgeAdded = out.smudgeUndo > out.lineUndo;
+        out.tool = engine.tool();
+        out.steps.push('smudge');
+        out.after = readRowAlpha(ym, sx0, sx1, 96);
+        out.colAfter = readColAlpha(r.left + r.width * 0.52, r.top + r.height * 0.38, r.top + r.height * 0.62, 96);
+      } catch (e) { out.error = (e && e.message) || String(e); }
+      finally { try { MTG.board.setIdle(true); } catch (_) {} }
+      return JSON.stringify(out);
+    },
+
+    /* 主功能自检：画笔/涂抹的撤销重做、清层撤销（像素级验证） */
+    async audit() {
+      const out = {};
+      try {
+        MTG.board.setIdle(false);
+        const engine = window.__fabulaEngine;
+        const lab = window.__paintlab;
+        const ov = $('ov'), r = ov.getBoundingClientRect();
+        const pev = (type, x, y) => ov.dispatchEvent(new PointerEvent(type, {
+          bubbles: true, cancelable: true, composed: true,
+          pointerId: 7, pointerType: 'mouse', isPrimary: true,
+          button: 0, buttons: type === 'pointerup' ? 0 : 1, pressure: 0.75,
+          clientX: x, clientY: y,
+        }));
+        const stroke = (x0, y0, x1, y1, n) => {
+          pev('pointerdown', x0, y0);
+          for (let i = 1; i <= (n || 12); i++) pev('pointermove', x0 + (x1 - x0) * i / (n || 12), y0 + (y1 - y0) * i / (n || 12));
+          pev('pointerup', x1, y1);
+          engine.commitStroke();
+        };
+        /* 客户端坐标 → 单点 alpha（读当前层 paintCur） */
+        const pt = (clientX, clientY) => {
+          const view = engine.getView();
+          const glc = $('gl'), gr = glc.getBoundingClientRect();
+          const k = glc.width / gr.width;
+          const dx = ((clientX - gr.left) * k - view.x) / view.scale;
+          const dy = ((clientY - gr.top) * k - view.y) / view.scale;
+          const res = lab.readAlpha(dx, dy, 1, 1);
+          return res.raw[3];
+        };
+        /* ── 1. 画笔：画→撤→重 ── */
+        engine.setTool('pen'); engine.setColor('#d81e2e');
+        const px = r.left + r.width * 0.30, py = r.top + r.height * 0.30;
+        const qx = r.left + r.width * 0.50;
+        const a0 = pt(qx, py);
+        stroke(px, py, qx, py);
+        const a1 = pt(qx, py);
+        engine.undo();
+        const a2 = pt(qx, py);
+        const st1 = window.__paintlab.stats;
+        out.afterUndo = st1.undo + '/' + st1.redo;
+        engine.redo();
+        const a3 = pt(qx, py);
+        const st2 = window.__paintlab.stats;
+        out.afterRedo = st2.undo + '/' + st2.redo;
+        engine.undo();
+        const a4 = pt(qx, py);
+        engine.redo();
+        const a5 = pt(qx, py);
+        out.pen = { a0, a1, a2, a3, a4, a5, drawOK: a1 > 60, undoOK: a2 <= 8, redoOK: a3 > 60, redo2OK: a5 > 60 };
+        /* ── 2. 涂抹：竖线→横涂→撤→重（取竖线中点） ── */
+        engine.setTool('pen');
+        const xm = r.left + r.width * 0.72, ya = r.top + r.height * 0.25, yb = r.top + r.height * 0.75;
+        stroke(xm, ya, xm, yb, 16);
+        const ym = r.top + r.height * 0.5;
+        const s0 = pt(xm, ym);
+        engine.setTool('smudge');
+        stroke(r.left + r.width * 0.62, ym, r.left + r.width * 0.82, ym, 20);
+        const s1 = pt(xm, ym);
+        engine.undo();
+        const s2 = pt(xm, ym);
+        engine.redo();
+        const s3 = pt(xm, ym);
+        out.smudge = {
+          s0, s1, s2, s3,
+          changed: Math.abs(s1 - s0) > 4,
+          undoRestores: Math.abs(s2 - s0) <= 6,
+          redoReapplies: Math.abs(s3 - s1) <= 6,
+        };
+        /* ── 3. 清层 + 撤销（先补一笔确保有内容） ── */
+        engine.setTool('pen');
+        const cpy = r.top + r.height * 0.70;
+        stroke(px, cpy, qx, cpy);
+        const c0 = pt(qx, cpy);
+        engine.clear('fg');
+        const c1 = pt(qx, cpy);
+        engine.undo();
+        const c2 = pt(qx, cpy);
+        out.clear = { c0, c1, c2, cleared: c0 > 60 && c1 <= 4, undoRestores: Math.abs(c2 - c0) <= 6 };
+        out.undoDepth = window.__paintlab.stats.undo;
+      } catch (e) { out.error = (e && e.message) || String(e); }
+      finally { try { MTG.board.setIdle(true); } catch (_) {} }
       return JSON.stringify(out);
     },
 

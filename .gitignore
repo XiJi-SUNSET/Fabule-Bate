@@ -1,3 +1,7 @@
 smoke.log
 smoke-shot.png
+smoke-crop.png
 node_modules/
+# 工程运行期临时文件（若工程目录恰在本仓库内，N-B17）
+montage.json.lock
+*.tmp-*

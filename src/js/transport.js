@@ -110,7 +110,10 @@
     if (!A.playing) return;
     const t = A.ctx.currentTime - A.origin;
     MTG.setPlayhead(t, true);
-    if (t >= MTG.projectEnd()) { A.pause(); MTG.setPlayhead(MTG.projectEnd()); return; }
+    /* 播到真实内容末端就停（projectEnd 可视长度尾部多 10 秒，此前会多播 10 秒静音，L-2）。
+       没有片段时退回 projectEnd 以免永不停机。 */
+    const end = (MTG.contentEnd && MTG.contentEnd()) || MTG.projectEnd();
+    if (t >= end) { A.pause(); MTG.setPlayhead(end); return; }
     A.raf = requestAnimationFrame(tick);
   }
 

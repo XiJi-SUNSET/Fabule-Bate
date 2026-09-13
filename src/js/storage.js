@@ -33,7 +33,14 @@
 
     /* 桌面：主进程弹目录对话框（已有 fabula.json 直开，否则询问后创建） */
     async _openDesktop() {
-      const snap = await FN().openDialog();
+      let snap = null;
+      try {
+        snap = await FN().openDialog();
+      } catch (err) {
+        /* 主进程拒绝（含"工程版本过新"L-16）：把原因说清楚，别让 promise 悬空报 unhandled */
+        MTG.toast('打开工程失败：' + ((err && err.message) || err), true);
+        return null;
+      }
       if (!snap || !snap.root) return null;
       S.mode = 'electron';
       S.dirName = snap.root.split(/[\\/]/).filter(Boolean).pop() || '';
@@ -115,7 +122,9 @@
         for await (const [name, h] of dir.entries()) {
           if (name.startsWith('.')) continue;
           if (h.kind === 'directory') {
-            if (name === 'boards' || name === 'node_modules') continue;
+            /* 与桌面版 listMedia 的排除集保持一致（boards/ 与 shots/ 里的帧图
+               不作为「素材」列出；曾经浏览器版漏排除 shots/，同工程两端列表不一致，L-9） */
+            if (name === 'boards' || name === 'shots' || name === 'node_modules') continue;
             await walk(h, prefix + name + '/', depth + 1, acc);
           } else {
             const path = prefix + name;
@@ -139,7 +148,11 @@
         return json;
       } catch (e) {
         MTG.toast('工程文件解析失败：' + e.message, true);
-        return null;
+        /* 抛出带标记的错误：调用方据此中止打开，避免把"解析失败"当成
+           "没有工程"而新建并覆盖原文件（M-1） */
+        const err = new Error('工程文件解析失败：' + e.message);
+        err.parseFailed = true;
+        throw err;
       }
     },
     async saveProject(proj) {

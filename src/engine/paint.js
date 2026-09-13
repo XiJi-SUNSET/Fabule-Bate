@@ -47,8 +47,7 @@ if (!gl) {
   errBox.textContent = '这个页面需要 WebGL2。请用较新的 Chrome / Edge / Firefox / Safari 打开。';
   return;
 }
-gl.getExtension('EXT_color_buffer_float');
-const HAS_FLOAT = !!gl.getExtension('EXT_color_buffer_float');
+const HAS_FLOAT = !!gl.getExtension('EXT_color_buffer_float');   // 只请求一次（L-23）
 const TEX_IF = HAS_FLOAT ? gl.RGBA16F : gl.RGBA8;
 const TEX_TY = HAS_FLOAT ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
 
@@ -56,8 +55,10 @@ const TEX_TY = HAS_FLOAT ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
 window.addEventListener('error', (ev) => {
   errBox.style.display = 'grid';
   errBox.textContent = '脚本错误：' + (ev.message || 'unknown')
-    + (ev.lineno ? '（第 ' + ev.lineno + ' 行）' : '') + ' —— 请把这段文字截图报告';
+    + (ev.lineno ? '（第 ' + ev.lineno + ' 行）' : '') + ' —— 请把这段文字截图报告（点击关闭）';
 });
+/* 遮罩可点击关闭：非致命错误不该永久挡住画布（L-21） */
+errBox.addEventListener('click', () => { errBox.style.display = 'none'; });
 
 /* ============================================================
    GL 基础设施
@@ -338,15 +339,15 @@ void main(){
 /* --- 4. 涂抹 --- */
 const SMUDGE_FS = HEAD + COMMON + `
 in vec2 vUV;
-uniform sampler2D u_src;
+uniform sampler2D u_a;       /* 底：蘸色 pass = 色袋 / 涂抹 pass = 画布 */
+uniform sampler2D u_b;       /* 源：蘸色 pass = 画布 / 涂抹 pass = 色袋 */
 uniform sampler2D u_mask;
 uniform sampler2D u_bucket;
 uniform vec2 u_p0;
 uniform vec2 u_p1;
 uniform float u_radius;
 uniform float u_hardness;
-uniform float u_strength;
-uniform float u_drag;
+uniform float u_rate;        /* 本 pass 的混合率（蘸率 / 涂抹率） */
 uniform float u_colorRate;
 out vec4 frag;
 void main(){
@@ -357,33 +358,19 @@ void main(){
   float r = max(u_radius, 1.0);
   float hh = clamp(u_hardness, 0.0, 0.97) * r;
   float w = 1.0 - smoothstep(hh, r, d);
-  vec4 orig = texture(u_src, uv);
-  if (w <= 0.002) { frag = orig; return; }
+  vec4 base = texture(u_a, uv);
+  if (w <= 0.002) { frag = base; return; }
   w *= texture(u_mask, uv).r;
 
-  vec2 ab = u_p1 - u_p0;
-  float L = max(length(ab), 1e-6);
-  vec2 dir = ab / L;
+  /* 色袋模型（Krita 式）：每段一趟动作，由 JS 侧绑定决定"底 / 源"——
+     蘸色 pass：底 = 色袋、源 = 画布（袋被画布"泡"进新色）；
+     涂抹 pass：底 = 画布、源 = 色袋（袋里的色吐到画布）。
+     色被袋子一整条携带：拖尾连续、无副本、原处自然被抹淡。 */
+  vec4 col = mix(base, texture(u_b, uv), clamp(u_rate * w, 0.0, 1.0));
 
-  /* 本段的施加量按"这段走过的弧长"归一，而不是按采样点个数。
-     直接按段数施加会有一个很隐蔽的后果：画得越慢 → 采样越密 → 段数越多
-     → 同一个像素被反复涂抹，糊成一团（手感就是"劲太大"）；
-     画得快反而几乎不动。而且同一笔画在 60Hz 和 120Hz 设备上效果还不一样。
-     k 是这一段占"参考弧长"的比例，参考弧长取笔刷半径的 0.35。
-     上限 2 只是防止笔尖瞬移（合成事件、丢帧）时一段吃满整块脏矩形；
-     上限取 2 而不是 1，是因为取 1 会正好在"快笔"这一侧咬到，
-     让快笔比慢笔少涂将近一半 —— 那就又回到速度相关了。 */
-  float k = min(L / max(u_radius * 0.5, 2.0), 2.0);
-
-  /* 拖拽取样：从"来时方向"取，距离固定为半径的一个比例。
-     所以拖尾长度只由 drag 决定，不随运笔速度变化。 */
-  vec2 sp = p - dir * (u_radius * u_drag * w);
-  vec4 dragged = texture(u_src, canvasToUV(sp));
-  vec4 col = mix(orig, dragged, clamp(u_strength * w * k, 0.0, 1.0));
-
-  /* 颜料桶上色（预乘空间混合），同样按弧长归一 */
+  /* 颜料桶上色（只在涂抹 pass 生效；蘸色 pass 传 u_colorRate = 0） */
   vec4 bucket = texture(u_bucket, vec2(0.5, 0.5));
-  col = mix(col, bucket, clamp(u_colorRate * w * k, 0.0, 1.0));
+  col = mix(col, bucket, clamp(u_colorRate * w, 0.0, 1.0));
   frag = col;
 }`;
 
@@ -631,7 +618,7 @@ const P_dab    = mkProg(DAB_VS, DAB_FS, ['u_res','u_center','u_half','u_rot','u_
 const P_comp   = mkProg(FS_VS, COMP_FS, ['u_layer','u_stroke','u_mask','u_color','u_opacity','u_erase','u_grain','u_grainScale','u_pigment']);
 const P_blit   = mkProg(FS_VS, BLIT_FS, ['u_tex','u_src']);
 const P_fill   = mkProg(FS_VS, FILL_FS, ['u_layer','u_mask','u_color']);
-const P_smudge = mkProg(FS_VS, SMUDGE_FS, ['u_src','u_mask','u_bucket','u_p0','u_p1','u_radius','u_hardness','u_strength','u_drag','u_colorRate','u_bbox','u_res']);
+const P_smudge = mkProg(FS_VS, SMUDGE_FS, ['u_a','u_b','u_mask','u_bucket','u_p0','u_p1','u_radius','u_hardness','u_rate','u_colorRate','u_bbox','u_res']);
 const P_blur   = mkProg(FS_VS, BLUR_FS, ['u_tex','u_dir','u_radius','u_bbox','u_res']);
 const P_blurmix= mkProg(FS_VS, BLUR_MIX_FS, ['u_blur','u_orig','u_mask','u_p0','u_p1','u_radius','u_hardness','u_strength','u_blurRadius','u_bbox','u_res']);
 const P_warp   = mkProg(FS_VS, WARP_FS, ['u_src','u_mask','u_p0','u_p1','u_radius','u_hardness','u_mode','u_strength','u_bbox','u_res']);
@@ -676,6 +663,7 @@ let maskTex   = null;
 let exportTex = null;
 let floodTex  = null;      // 油漆桶的填充区域掩膜
 let backTex   = null;      // 底图：洋葱皮 + 参考层（DOM 合成一张送来；不写帧、不导出）
+let bagTex    = null;      // 涂抹"色袋"：笔刷携带的颜色（落笔清空、段间持续）
 let backOn    = false, backAlpha = 1;
 
 function allocTextures() {
@@ -689,6 +677,7 @@ function allocTextures() {
   blurTmp    = mkTex(DW, DH, gl.LINEAR);
   fxTmp      = mkTex(DW, DH, gl.LINEAR);
   preScratch = mkTex(DW, DH, gl.LINEAR);
+  bagTex     = mkTex(DW, DH, gl.LINEAR);
   bucketA    = mkTex(1, 1, gl.NEAREST);
   bucketB    = mkTex(1, 1, gl.NEAREST);
   bucketCur = bucketA; bucketAlt = bucketB;
@@ -698,7 +687,7 @@ function allocTextures() {
   backTex    = mkTex(DW, DH, gl.LINEAR);
   backOn = false; backAlpha = 1;
   for (const t of [layerBank.bg.cur, layerBank.bg.alt, layerBank.fg.cur, layerBank.fg.alt,
-                   strokeTex, blurTmp, fxTmp, preScratch, backTex]) clearTex(t);
+                   strokeTex, blurTmp, fxTmp, preScratch, bagTex, backTex]) clearTex(t);
   clearSmall(bucketA); clearSmall(bucketB);
 }
 
@@ -867,8 +856,14 @@ function snapRegion(srcTex, x, y, w, h) {
   if (!c) return null;
   [x, y, w, h] = c;
   const t = mkTex(w, h, gl.LINEAR);
-  beginPass(t);
-  gl.disable(gl.BLEND);
+  /* 渲染目标是 w×h 的小纹理，viewport 必须与它同尺寸：
+     沿用 beginPass(t) 的 DW×DH 会让 vUV 按 DW 归一，抓到的区块错位并被
+     拉伸（截一个小条铺满整个快照）——表现为撤销/重做恢复成空白或错位。 */
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  gl.disable(gl.SCISSOR_TEST); gl.disable(gl.BLEND);
+  gl.viewport(0, 0, w, h);
+  curBbox = [x, y, w, h];       // 与 beginPass(带 bbox) 的约定保持一致
   gl.useProgram(P_blit.p);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, srcTex);
   gl.uniform1i(P_blit.u.u_tex, 0);
@@ -916,7 +911,9 @@ function pushUndo(entry) {
   if (entry.layer === undefined) entry.layer = layer;   /* 跨层撤销：快照记住自己属于哪一层 */
   undoStack.push(entry);
   undoBytes += entry.bytes;
-  while (undoStack.length > undoLimit() || (undoBytes > UNDO_MAX_BYTES && undoStack.length > 4)) {
+  /* 显存预算超限时最少保最近 2 条（原为 4）：4096² 下的全幅 float 快照
+     单条 ~128MB，保 4 条就是 500MB+ 峰值（L-19）。小画幅远低于预算，不触发。 */
+  while (undoStack.length > undoLimit() || (undoBytes > UNDO_MAX_BYTES && undoStack.length > 2)) {
     const old = undoStack.shift();
     undoBytes -= old.bytes;
     gl.deleteTexture(old.tex);
@@ -1014,8 +1011,8 @@ const P = {
   /* --- 修饰类工具 --- */
   /* 涂抹的"强度"现在定义成：在笔刷中心线上走一趟，原像素被替换掉的比例。
      内部的施加量是按弧长归一的，所以这个数字不随运笔快慢变。 */
-  smudgeStrength: 0.30,
-  smudgeDrag: 0.60,     // 拖尾长度 = 笔刷半径 × 这个比例
+  smudgeStrength: 0.45, // 涂抹率：每段把袋里的色"吐"到画布的比例
+  smudgeDrag: 0.50,     // 蘸色率：每段袋色被画布更新的比例（越小，袋色越"陈旧"、拖尾越长）
   smudgeColor: 0.08,
   blurStrength: 0.72,
   blurRadius: 14,
@@ -1198,12 +1195,14 @@ function toDoc(clientX, clientY) {
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = stage.clientWidth, h = stage.clientHeight;
+  const W2 = Math.max(1, Math.round(w * dpr)), H2 = Math.max(1, Math.round(h * dpr));
+  /* 尺寸没变就不重设：canvas.width 赋值会清空绘制缓冲，重复赋值在帧间隙会闪。
+     显示尺寸由 CSS 的 100% 负责 —— 此前的内联 px 会把覆盖层钉死在首次尺寸，
+     拖分割条 / 绘画弹窗搬 DOM 后就与画布错位（H-8）。 */
   for (const c of [glc, ovc]) {
-    c.width = Math.max(1, Math.round(w * dpr));
-    c.height = Math.max(1, Math.round(h * dpr));
+    if (c.width !== W2) c.width = W2;
+    if (c.height !== H2) c.height = H2;
   }
-  ovc.style.width = w + 'px'; ovc.style.height = h + 'px';
-  /* 界面全部 DOM 化后，ovc 只承担画布区的覆盖层（光标/选区路径），与 stage 同尺寸 */
 }
 
 /* ============================================================
@@ -1468,28 +1467,55 @@ function runSmudge(p0, p1) {
      pk = 线段平均压力；半径与强度都随它呼吸 */
   const pk = ((p0.p || 0) + (p1.p || 0)) / 2;
   const r = brushRadius(pk);
-  const bb = segBBox(p0, p1, r + r * P.smudgeDrag + 4);
+  const bb = segBBox(p0, p1, r + 4);
+  /* —— 色袋模型（Krita 式）两趟，顺序关键：先吐后蘸 ——
+     ① 涂抹：canvas = mix(canvas, bag, 涂抹率) —— 用"上一段携带的旧袋色"涂画布
+     ② 蘸色：bag = mix(bag, canvas, 蘸率) —— 再把画布新色装进袋（慢，袋保持陈旧）
+     若改成先蘸后吐，袋永远是"刚蘸的新色"，涂了等于没涂（实测确认过）。 */
   if (!beginPass(fxTmp, bb[0], bb[1], bb[2], bb[3])) return;
   gl.disable(gl.BLEND);
   gl.useProgram(P_smudge.p);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, paintCur);
-  gl.uniform1i(P_smudge.u.u_src, 0);
-  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, maskTex);
-  gl.uniform1i(P_smudge.u.u_mask, 1);
-  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, bucketCur);
-  gl.uniform1i(P_smudge.u.u_bucket, 2);
+  gl.uniform1i(P_smudge.u.u_a, 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, bagTex);
+  gl.uniform1i(P_smudge.u.u_b, 1);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, maskTex);
+  gl.uniform1i(P_smudge.u.u_mask, 2);
+  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, bucketCur);
+  gl.uniform1i(P_smudge.u.u_bucket, 3);
   gl.uniform2f(P_smudge.u.u_p0, p0.x, p0.y);
   gl.uniform2f(P_smudge.u.u_p1, p1.x, p1.y);
   gl.uniform1f(P_smudge.u.u_radius, r);
   gl.uniform1f(P_smudge.u.u_hardness, P.hardness);
-  gl.uniform1f(P_smudge.u.u_strength, P.smudgeStrength * (0.18 + 0.82 * pk));
-  gl.uniform1f(P_smudge.u.u_drag, P.smudgeDrag);
+  gl.uniform1f(P_smudge.u.u_rate, P.smudgeStrength * (0.18 + 0.82 * pk));   /* ① 涂抹率：吐袋色 */
   gl.uniform1f(P_smudge.u.u_colorRate, P.smudgeColor);
   gl.uniform4f(P_smudge.u.u_bbox, curBbox[0], curBbox[1], curBbox[2], curBbox[3]);
   gl.uniform2f(P_smudge.u.u_res, DW, DH);
   fsQuad();
-  copyBBox(fxTmp, paintCur);
-  dirtyAdd((p0.x + p1.x) / 2, (p0.y + p1.y) / 2, Math.hypot(p1.x - p0.x, p1.y - p0.y) / 2 + r + r * P.smudgeDrag + 4);
+  copyBBox(fxTmp, paintCur);                              /* ① 画布更新 */
+
+  if (!beginPass(fxTmp, bb[0], bb[1], bb[2], bb[3])) return;
+  gl.disable(gl.BLEND);
+  gl.useProgram(P_smudge.p);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, bagTex);
+  gl.uniform1i(P_smudge.u.u_a, 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, paintCur);
+  gl.uniform1i(P_smudge.u.u_b, 1);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, maskTex);
+  gl.uniform1i(P_smudge.u.u_mask, 2);
+  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, bucketCur);
+  gl.uniform1i(P_smudge.u.u_bucket, 3);
+  gl.uniform2f(P_smudge.u.u_p0, p0.x, p0.y);
+  gl.uniform2f(P_smudge.u.u_p1, p1.x, p1.y);
+  gl.uniform1f(P_smudge.u.u_radius, r);
+  gl.uniform1f(P_smudge.u.u_hardness, P.hardness);
+  gl.uniform1f(P_smudge.u.u_rate, P.smudgeDrag);          /* ② 蘸率：袋被画布更新 */
+  gl.uniform1f(P_smudge.u.u_colorRate, 0);
+  gl.uniform4f(P_smudge.u.u_bbox, curBbox[0], curBbox[1], curBbox[2], curBbox[3]);
+  gl.uniform2f(P_smudge.u.u_res, DW, DH);
+  fsQuad();
+  copyBBox(fxTmp, bagTex);                                /* ② 袋更新 */
+  dirtyAdd((p0.x + p1.x) / 2, (p0.y + p1.y) / 2, Math.hypot(p1.x - p0.x, p1.y - p0.y) / 2 + r + 4);
 }
 
 function runBlur(p0, p1) {
@@ -1828,7 +1854,7 @@ function pickColorAt(d) {
   gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   const a = px[3] / 255;
-  const paper = [0.96, 0.94, 0.92];
+  const paper = [0xf5 / 255, 0xf0 / 255, 0xea / 255];   // 与 board.js 的纸色 #f5f0ea 一致（L-20）
   color = [0, 1, 2].map(i => (px[i] / 255) * a + paper[i] * (1 - a));
   notifyColor();
   return true;
@@ -1958,6 +1984,14 @@ ovc.addEventListener('pointerdown', (e) => {
   if (DESTRUCTIVE[tool]) {
     /* 破坏性工具：落笔先整层快照到复用缓冲，收笔时再裁到脏矩形 */
     beginPass(preScratch);
+    gl.disable(gl.BLEND);
+    gl.useProgram(P_blit.p);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, paintCur);
+    gl.uniform1i(P_blit.u.u_tex, 0);
+    gl.uniform4f(P_blit.u.u_src, 0, 0, 1, 1);
+    fsQuad();
+    /* 涂抹色袋：落笔时袋 = 当前画布（从"起点色"开始携带，避免开头把画布擦淡） */
+    beginPass(bagTex);
     gl.disable(gl.BLEND);
     gl.useProgram(P_blit.p);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, paintCur);
@@ -2108,6 +2142,21 @@ ovc.addEventListener('lostpointercapture', (e) => {
     else if (xf.on) xf.drag = null;   /* 变形拖拽丢了捕获：松手，别让拖拽粘住 */
     else commitLasso();          /* 套索中途丢了捕获，不能让路径悬在半空 */
   }
+});
+/* 窗口失焦（Alt+Tab）：进行中的笔画 / 平移立即收尾。
+   失焦时浏览器不保证补发 pointercancel / lostpointercapture（驱动/触屏尤甚），
+   没有兜底会让笔画悬置在半空（M-24）。 */
+window.addEventListener('blur', () => {
+  if (panActive) { endPan(); return; }
+  if (activePointer === null && !drawing) return;
+  activePointer = null;
+  penPending = false;
+  shapeCur = null;
+  zoomDrag = null;
+  lassoCur = null;
+  if (xf.on) xf.drag = null;
+  if (drawing) endStroke(null);      // endStroke 不读事件参数，传 null 安全
+  inputQ.length = 0;
 });
 ovc.addEventListener('pointerleave', () => { lastCursor.inside = false; });
 ovc.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -2413,10 +2462,9 @@ ovc.addEventListener('wheel', (e) => {
 window.addEventListener('keydown', (e) => {
   const tag = e.target.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) return;
-  /* 动作表优先：工具选择与命令键位（撤销/重做/笔刷大小/视图…）都可由用户重绑
-     （data/actions.js）。会话类键位（下方 xf 块、空格平移、Esc 取消、Shift+W
-     液化模式、Ctrl+A/Shift+I 选区）不进动作表，保持引擎内处理。 */
-  if (window.__fabulaActions && window.__fabulaActions.handleKey(e)) return;
+  /* 会话类键位（下方 xf 块、空格平移、Esc 取消、Shift+W 液化模式、Ctrl+A/Shift+I 选区）
+     保持引擎内处理；工具/命令键位由宿主（montage 的全局键盘）负责。
+     （原 __fabulaActions 死钩子已删，N-B9） */
   if (xf.on) {
     if (e.key === 'Enter') { e.preventDefault(); xfCommit(); return; }
     if (e.key === 'Escape') { e.preventDefault(); xfCancel(); return; }
@@ -2449,8 +2497,7 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault(); invertMask(); return;
   }
 });
-window.addEventListener('keyup', (e) => {
-});
+/* （此前的空 keyup 监听器已删：纯冗余，L-24） */
 
 /* ============================================================
    UI 构建
@@ -2578,12 +2625,6 @@ function exportBlob() {
   const cv = rgbaToCanvas(compositeRGBA8(), DW, DH);
   return new Promise(res => { cv.toBlob(b => res(b), 'image/png'); });
 }
-function exportPNG() {
-  const a = document.createElement('a');
-  a.download = 'fabula-' + Date.now() + '.png';
-  a.href = exportDataURL();
-  a.click();
-}
 
 /* ============================================================
    帧 IO / 文档尺寸 / 底图（DOM 宿主的进出口）
@@ -2685,7 +2726,7 @@ function setDocSize(w, h, opts) {
 
   const old = { bg: layerBank.bg.cur, fg: layerBank.fg.cur };
   const oldTexes = [layerBank.bg.cur, layerBank.bg.alt, layerBank.fg.cur, layerBank.fg.alt,
-                    strokeTex, blurTmp, fxTmp, preScratch, maskTex, exportTex, floodTex,
+                    strokeTex, blurTmp, fxTmp, preScratch, bagTex, maskTex, exportTex, floodTex,
                     backTex, bucketA, bucketB, xfSrcTex, xfBackTex, previewTex].filter(Boolean);
 
   DW = w; DH = h;
@@ -2764,18 +2805,10 @@ function zoom100() {
   const dpr = glc.width / r.width;
   zoomCenter(dpr / view.scale);
 }
-function panBy(dx, dy) { view.x += dx; view.y += dy; notifyView(); }
 
 /* ---- 常量表（DOM 前端的数据源）：色板 / 液化模式 / 动作条 ---- */
 const SWATCHES = ['#22262b','#5a6472','#a8b4c0','#ffffff','#b4553f','#c99a4e','#6f8f5a','#4a7a9b','#7a5d8f','#c98fa6'];
 const WARP_MODES = ['前推', '旋转', '收缩', '膨胀', '放大', '缩小'];
-const UI_ACTIONS = [
-  { id: 'undo',   name: '撤销',     icon: 'M9 14 4 9l5-5 M4 9h10a6 6 0 0 1 0 12h-3' },
-  { id: 'redo',   name: '重做',     icon: 'M15 14l5-5-5-5 M20 9H10a6 6 0 0 0 0 12h3' },
-  { id: 'white',  name: '铺白底',   icon: 'M4.5 4.5h15v15h-15z' },
-  { id: 'clear',  name: '清空',     icon: 'M5 7h14 M9 7V5h6v2 M7 7l1 13h8l1-13' },
-  { id: 'export', name: '导出 PNG', icon: 'M12 4v10 M8 10l4 4 4-4 M5 19h14' },
-];
 
 function fmtPanelVal(r) {
   const v = r.obj[r.key], k = r.key;
@@ -2836,8 +2869,8 @@ function panelRows() {
   }
   if (tool === 'smudge') {
     T('smudge', '涂抹');
-    S('smudgeStrength', '强度', 0, 1, 0.01);
-    S('smudgeDrag', '拖拽距离', 0.1, 2.5, 0.05);
+    S('smudgeStrength', '涂抹率', 0.05, 1, 0.01);
+    S('smudgeDrag', '蘸色率', 0.05, 1, 0.05);
     S('smudgeColor', '上色率', 0, 1, 0.01);
   }
   if (tool === 'blur') {
@@ -3182,7 +3215,8 @@ function drawOverlay() {
       octx.restore();
     }
 
-    if (lastCursor.inside && !panActive && !xf.on) {
+    /* 导航类工具（抓手/缩放）交给系统光标（CSS），不再叠自绘笔刷圈 */
+    if (lastCursor.inside && !panActive && !xf.on && tool !== 'hand' && tool !== 'zoom') {
     /* 光标 = 实际笔刷形状：压扁比 / 倾角加宽与转向 / 扁笔尖锁定角全部实时反映，
        倾斜笔杆时光标会肉眼可见地变形——不再是一个看不出任何信息的圆圈 */
     const shp = cursorShape();
@@ -3257,16 +3291,30 @@ function airbrushTick(dtMs) {
   const c = strokeInfo.lastSmoothed || { x: sm.x, y: sm.y };
   const dabs = [];
   for (let i = 0; i < n; i++) {
-    dabs.push({ x: c.x, y: c.y, p: strokeInfo.lastP, tl: PEN.tilt, az: PEN.az, ang: 0 });
+    /* ang = 随机角：喷枪散布必须各向同性。此前恒 0 会让法线恒指 +y，
+       按住不动时墨点堆成一条竖带（M-23）；用种子化 rnd() 保持可复现（N-B8） */
+    dabs.push({ x: c.x, y: c.y, p: strokeInfo.lastP, tl: PEN.tilt, az: PEN.az,
+                ang: rnd() * Math.PI * 2 });
   }
   drawDabs(dabs);
   strokeInfo.dabs += n;
 }
 
 let lastFrameTs = 0;
+let hiddenFrames = 0;
 function frame(ts) {
   const dt = lastFrameTs ? Math.min(80, ts - lastFrameTs) : 16;
   lastFrameTs = ts;
+
+  /* 窗口不可见（最小化/隐藏）时跳过绘制省 GPU（L-22）。宿主关掉了
+     backgroundThrottling（冒烟截图需要），rAF 不会自然节流，这里兜住。
+     每 ~60 帧仍走一次全量，保证隐藏期间的程序性变更（载帧/切尺寸）恢复时自洽。
+     冒烟窗口 show:true 置于屏幕外，document.hidden 为 false，不受影响。 */
+  if (document.hidden) {
+    if ((hiddenFrames++ % 60) !== 0) { requestAnimationFrame(frame); return; }
+  } else {
+    hiddenFrames = 0;
+  }
 
   consumeInput();
   airbrushTick(dt);
@@ -3308,8 +3356,6 @@ window.__fabulaEngine = {
      montage 前端负责业务（板/帧/时间轴/分镜表/存储），双方只经这个对象说话。
      onXxx 回调由前端赋值，引擎在对应事件发生时调用。 */
   /* ---- 数据源（工具列/参数面板都由这里生成，前端不重复定义） ---- */
-  TOOLS,
-  UI_ACTIONS,
   SWATCHES,
   BRUSHES,    // 笔刷预设（DOM 的笔刷条/参数面板从这里渲染）
   P,
@@ -3341,43 +3387,20 @@ window.__fabulaEngine = {
   redo: () => doRedo(),
   canUndo: () => undoStack.length > 0,
   canRedo: () => redoStack.length > 0,
-  clearHistory() {
-    for (const e of undoStack) gl.deleteTexture(e.tex);
-    for (const e of redoStack) gl.deleteTexture(e.tex);
-    undoStack.length = 0; redoStack.length = 0; undoBytes = 0;
-    updateStat();
-  },
   /* 强制收笔：宿主在存盘/切帧前调用，把"画到一半"的笔画落定入撤销栈 */
   commitStroke() { if (drawing) endStroke(); },
   /* 重新套用统一偏好里的压感/平滑（设置面板改动后即时生效） */
   applyPenPrefs,
   /* 空格/抓手：由宿主（montage 的全局键盘）驱动，引擎不抢键盘 */
   setPanMode(on) { spaceDown = !!on; },
-  /* 重置某支笔刷：丢弃按笔记忆与会话缓存，重铺出厂预设（笔刷设置弹窗的「重置此笔刷」用） */
-  resetBrush(id) {
-    const bpId = id || tool;
-    try {
-      const p = window.__fabulaPrefs;
-      const bp = p && p.get('brushParams');
-      if (bp && bp[bpId]) {
-        const next = Object.assign({}, bp);
-        delete next[bpId];
-        p.set('brushParams', next);
-      }
-    } catch (_) {}
-    delete toolParams[bpId];
-    if (bpId === tool) applyBrush(tool);
-  },
   /* ================= 帧 IO（montage 语义：帧文件 = 透明底 PNG） ================= */
   /* 载入位图到指定层（默认 fg 线稿层，与 montage 的"帧文件全进线稿层"一致） */
   loadImage: (src, opts) => loadImageToLayer(src, opts),
   /* 整帧导出：bg+fg 合成，透明底（不含底图/洋葱皮） */
   exportDataURL: () => exportDataURL(),
   exportBlob: () => exportBlob(),
-  /* 当前图层的透明底 dataURL（单层调试用） */
-  exportLayerPNG() { return rgbaToCanvas(readLayerRGBA8(), DW, DH).toDataURL('image/png'); },
-  exportPNG: () => exportPNG(),
-  loadLayerFromURL(url) { return loadImageToLayer(url, { layer: 'fg', mode: 'contain', clearUndo: true, fit: true }); },
+  /* exportPNG / exportLayerPNG / loadLayerFromURL 已删：宿主导入导出统一走
+     loadImage + exportDataURL / exportBlob（审计死代码清理 N-B11） */
 
   /* ================= 底图：洋葱皮 + 参考层 ================= */
   setBackdrop, setBackdropAlpha, hasBackdrop,
@@ -3399,7 +3422,7 @@ window.__fabulaEngine = {
   /* ================= 视图 ================= */
   fit: () => fitView(),
   zoom100: () => zoom100(),
-  zoomAt, zoomCenter, panBy, getView, setView,
+  zoomAt, zoomCenter, getView, setView,
   onView: null,
 
   /* ================= 选区 ================= */

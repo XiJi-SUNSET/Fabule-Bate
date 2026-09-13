@@ -100,9 +100,15 @@ function sanitizeGroup(raw) {
 }
 
 /* 任何来自磁盘/agent/IPC 的工程 JSON 都要过这里：修形、补默认、剔除非法字段。
-   永远返回一个结构完整的工程对象，绝不抛异常。 */
+   永远返回一个结构完整的工程对象；唯一例外：来自未来版本的文件抛错（L-16），
+   让调用方拒绝打开而不是"降级重写丢字段"。 */
 function normalizeProject(raw) {
   const src = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  if (typeof src.version === 'number' && src.version > FORMAT_VERSION) {
+    const err = new Error('工程文件版本过新（v' + src.version + '，当前支持 v' + FORMAT_VERSION + '）：请升级 Fabula 后再打开');
+    err.code = 'E_VERSION';
+    throw err;
+  }
   const p = newProjectModel(src.name);
   if (typeof src.fps === 'number' && src.fps > 0 && src.fps <= 120) p.fps = src.fps;
   if (typeof src.boardW === 'number' && src.boardW >= 320 && src.boardW <= 4096) p.boardW = Math.round(src.boardW);

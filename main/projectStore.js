@@ -3,18 +3,43 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { newProjectModel, normalizeProject, sanitizeShot, genId, genAssetId, ASSET_ID_RE, SHOT_ID_RE } = require('./projectModel.cjs');
+const { newProjectModel, normalizeProject, sanitizeShot, genAssetId, SHOT_ID_RE } = require('./projectModel.cjs');
 
 const PTR_FILE = path.join(os.homedir(), '.fabula', 'current-project.json');
 
 const state = {
   win: null,          // BrowserWindow（watch 通知用）
   root: null,         // 当前工程根目录（绝对路径）
-  project: null,      // normalizeProject 后的模型
+  project: null,      // normalizeProject 后的模型（fabula.json，冒烟自检用）
   watcher: null,
-  lastJson: '',       // 上次成功落盘的 JSON 文本（watch 回环抑制）
+  lastJson: '',       // 上次成功落盘的 fabula.json 文本（watch 回环抑制）
+  lastMontage: null,  // 上次已知的 montage.json 文本（null = 尚未建立基线）
+  mediaFiles: new Set(),   // boards/shots/assets 下"外部"改动的文件（N-A5）
   selfWriteAt: 0
 };
+
+/* 自写媒体抑制（N-A5 修订）：UI 保存帧图/素材经 project:writeFile 落盘，
+   同样会触发 watch —— 不抑制的话每次自动保存都会被当成"外部写入"，
+   广播 media 打断作画（弹提示、清缓存、重读当前帧）。 */
+const selfMedia = new Map();     // rel -> 时间戳
+const SELF_MEDIA_WINDOW_MS = 5000;
+function markSelfMedia(rel) {
+  if (typeof rel !== 'string') return;
+  selfMedia.set(rel, Date.now());
+  if (selfMedia.size > 64) {                       // 兜底清理：不无限增长
+    const now = Date.now();
+    for (const [k, v] of selfMedia) if (now - v > 30000) selfMedia.delete(k);
+  }
+}
+/* watch 回调消费：true = 这次变化是自己写的（吞掉）。
+   窗口期内**持续生效、不删除**——Windows 上一次写入常产生多个 watch 事件，
+   消费一次即删会让后续事件误报成"外部写入"（实测验证过）。 */
+function consumeSelfMedia(rel) {
+  const ts = selfMedia.get(rel);
+  if (!ts) return false;
+  if (Date.now() - ts > SELF_MEDIA_WINDOW_MS) { selfMedia.delete(rel); return false; }
+  return true;
+}
 
 /* ---------- 原子写：tmp + rename，读者（渲染端/agent）永远看到完整文件 ---------- */
 function writeAtomic(absPath, data) {
@@ -29,8 +54,6 @@ function writeJsonAtomic(absPath, obj) {
   writeAtomic(absPath, text);
   return text;
 }
-
-function pointerPath() { return PTR_FILE; }
 
 /* MCP server 通过指针文件定位当前工程；Fabula 打开/创建工程时同步更新 */
 function writePointer(root) {
@@ -67,15 +90,9 @@ function createProject(dirPath, name) {
   return openDir(root);
 }
 
-function saveProject(incoming) {
-  if (!state.root) throw new Error('没有打开的工程');
-  const project = normalizeProject(incoming);
-  const text = writeJsonAtomic(path.join(state.root, 'fabula.json'), project);
-  state.project = project;
-  state.lastJson = text;
-  state.selfWriteAt = Date.now();
-  return snapshot();
-}
+/* saveProject 已删（N-B7）：project:save 通道移除后无人调用，
+   且它会把渲染端模型 normalize 成 shots 模型写 fabula.json（埋雷函数本体）。
+   真实保存走渲染端 → project:writeFile → montage.json。 */
 
 /* 渲染端把画布导出为 PNG dataURL 写入指定镜头 */
 function writeShotImage(shotId, dataUrl) {
@@ -86,6 +103,8 @@ function writeShotImage(shotId, dataUrl) {
   }
   const b64 = dataUrl.slice('data:image/png;base64,'.length);
   const buf = Buffer.from(b64, 'base64');
+  /* 与素材导入的 96MB 上限对齐（L-13）：dataURL 无上限时一个超大帧会把内存吃穿 */
+  if (buf.length === 0 || buf.length > 96 * 1024 * 1024) throw new Error('帧图片为空或超过 96MB');
   /* PNG magic bytes 校验：内容与声明必须一致 */
   const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   if (buf.length < 8 || !buf.subarray(0, 8).equals(PNG_MAGIC)) throw new Error('PNG 内容校验失败');
@@ -108,8 +127,17 @@ function setProject(root, project) {
   state.root = root;
   state.project = project;
   try { state.lastJson = JSON.stringify(project, null, 2); } catch (_) {}
+  /* montage.json 的"已知文本"基线：watch 用它判定外部（Agent/手改）变更 */
+  try { state.lastMontage = fs.readFileSync(path.join(root, 'montage.json'), 'utf8'); }
+  catch (_) { state.lastMontage = null; }
   writePointer(root);
   startWatch(root);
+}
+
+/* 渲染端经 IPC（project:writeFile）写工程文件后调用：记下我们自己写的
+   montage.json 文本，避免 UI 的每次保存都被 watch 当成外部变更广播（回环抑制）。 */
+function markSelfWrite(rel, text) {
+  if (rel === 'montage.json') state.lastMontage = text;
 }
 
 /* ---------- fs.watch：外部（agent）变更 → 通知渲染端 ---------- */
@@ -117,7 +145,23 @@ function setProject(root, project) {
 function startWatch(root) {
   if (state.watcher) { try { state.watcher.close(); } catch (_) {} state.watcher = null; }
   try {
-    state.watcher = fs.watch(root, { recursive: true }, () => scheduleNotify());
+    state.watcher = fs.watch(root, { recursive: true }, (_ev, name) => {
+      /* 媒体文件（帧图/素材）变化也要标记（Agent 纯换图不改任何 JSON）；
+         但自己写的（markSelfMedia 登记过）要吞掉，否则每次保存都打断用户（N-A5 修订） */
+      if (name) {
+        const n = String(name).replace(/\\/g, '/');
+        if (n.startsWith('boards/') || n.startsWith('shots/') || n.startsWith('assets/')) {
+          if (!consumeSelfMedia(n)) state.mediaFiles.add(n);
+        }
+      }
+      scheduleNotify();
+    });
+    /* 被监视目录被删/掉线时 error 不监听会变 uncaughtException（L-14） */
+    state.watcher.on('error', (e) => {
+      console.error('[fabula] fs.watch 错误：', e.message);
+      try { state.watcher.close(); } catch (_) {}
+      state.watcher = null;
+    });
   } catch (e) {
     console.error('[fabula] fs.watch 启动失败：', e.message);
   }
@@ -136,17 +180,44 @@ function scheduleNotify() {
    不一致（agent 改过）→ 重读模型 + 通知渲染端。 */
 function notifyChanged() {
   if (!state.root || !state.win) return;
-  let external = false;
+  const sources = [];
+  /* fabula.json（主进程/MCP 旧链路 + 冒烟自检模型） */
+  let fabulaChanged = false;
   try {
     const disk = JSON.parse(fs.readFileSync(path.join(state.root, 'fabula.json'), 'utf8'));
-    external = JSON.stringify(disk, null, 2) !== state.lastJson;
-  } catch (_) { external = false; }   // JSON 正被写一半（tmp rename 原子性保证不会读到半截；读不到就不误报）
-  if (external) {
+    /* 与 normalize 后的内存模型比较（M-6）：lastJson 存的是 normalize 结果，
+       直接比原文会在「agent 原文含默认缺失字段」时持续误报 external、反复广播 */
+    fabulaChanged = JSON.stringify(normalizeProject(disk), null, 2) !== state.lastJson;
+  } catch (_) { fabulaChanged = false; }   // JSON 正被写一半（tmp rename 原子性保证不会读到半截；读不到就不误报）
+  if (fabulaChanged) {
+    sources.push('fabula');
     try { state.project = normalizeProject(fs.readFileSync(path.join(state.root, 'fabula.json'), 'utf8')); } catch (_) {}
     try { state.lastJson = JSON.stringify(state.project, null, 2); } catch (_) {}
   }
+  /* montage.json（UI + Agent 的工程真相，H-2）：与"最后一次已知文本"比较。
+     基线 null（新建工程尚未写过）时文件首次出现视为外部创建（N-B20）。 */
   try {
-    state.win.webContents.send('project:changed', { external, at: Date.now() });
+    const text = fs.readFileSync(path.join(state.root, 'montage.json'), 'utf8');
+    if (state.lastMontage === null) {
+      state.lastMontage = text;
+      sources.push('montage');
+    } else if (text !== state.lastMontage) {
+      state.lastMontage = text;            // 收敛：广播一次后即视为已知
+      sources.push('montage');
+    }
+  } catch (_) {}
+  /* 媒体文件变化（Agent 换图/导素材）：JSON 无变化也要通知 UI——
+     带文件清单，渲染端只处理真正相关的（当前帧被改才提示/重读）（N-A5） */
+  let mediaFiles = [];
+  if (state.mediaFiles.size) {
+    mediaFiles = [...state.mediaFiles];
+    state.mediaFiles.clear();
+    sources.push('media');
+  }
+  try {
+    state.win.webContents.send('project:changed', {
+      external: sources.length > 0, sources, files: mediaFiles, at: Date.now(),
+    });
   } catch (_) {}
 }
 
@@ -165,7 +236,12 @@ function sniffAsset(buf) {
   if (s(0, 4) === 'fLaC') return 'audio';
   if (s(0, 3) === 'ID3') return 'audio';                                                          // MP3
   if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return 'audio';                                // MP3 帧同步
-  if (s(4, 8) === 'ftyp') return 'audio';                                                         // M4A/MP4 音频
+  if (s(4, 8) === 'ftyp') {
+    /* ISO-BMFF 容器：只有 M4A/M4B 品牌可确认为纯音频；
+       其余（isom/mp42/avc1…）多为视频，拒收而不是误当音频导入（L-15） */
+    const brand = s(8, 12);
+    return (brand === 'M4A ' || brand === 'M4B ') ? 'audio' : null;
+  }
   return null;
 }
 
@@ -175,6 +251,7 @@ function importAssets(filePaths) {
   if (!state.root) throw new Error('没有打开的工程');
   const added = [];
   let skipped = 0;
+  const copied = [];                    // 已落盘媒体：清单写失败时回滚（M-4）
   for (const src of (filePaths || []).slice(0, 64)) {
     try {
       const buf = fs.readFileSync(src);
@@ -186,6 +263,7 @@ function importAssets(filePaths) {
       if (!ext || ext.length > 6) ext = kind === 'image' ? '.png' : '.mp3';
       const rel = 'assets/' + kind + '/' + id + ext;
       writeAtomic(path.join(state.root, rel), buf);
+      copied.push(rel);
       state.project.assets.push({
         id,
         name: path.basename(src, path.extname(src)).slice(0, 120) || '素材',
@@ -194,13 +272,27 @@ function importAssets(filePaths) {
       added.push(id);
     } catch (_) { skipped++; }
   }
-  state.lastJson = writeJsonAtomic(path.join(state.root, 'fabula.json'), state.project);
+  try {
+    state.lastJson = writeJsonAtomic(path.join(state.root, 'fabula.json'), state.project);
+  } catch (e) {
+    /* 清单写失败：删除本轮刚落盘的媒体并回滚内存清单，避免"有文件无清单"的孤儿素材（M-4） */
+    for (const rel of copied) { try { fs.rmSync(path.join(state.root, rel), { force: true }); } catch (_) {} }
+    state.project.assets = state.project.assets.filter((a) => added.indexOf(a.id) < 0);
+    throw e;
+  }
   state.selfWriteAt = Date.now();
   return Object.assign(snapshot(), { added: added.length, skipped });
 }
 
 function attachWindow(win) { state.win = win; }
 function current() { return snapshot(); }
-function makeId() { return genId(); }
 
-module.exports = { openDir, createProject, saveProject, writeShotImage, importAssets, current, attachWindow, pointerPath, writePointer, normalizeProject };
+module.exports = {
+  openDir, createProject, writeShotImage, importAssets,
+  current, attachWindow,
+  writeAtomic,                      // main.js 的 writeFile/备份导出共用（原子写）
+  markSelfWrite,                    // main.js 写 montage.json 后登记（watch 回环抑制）
+  markSelfMedia,                    // main.js 写帧图/素材后登记（N-A5 修订）
+  /* 测试探针（test/project-store.test.mjs）：直接驱动变更判定，不拉起 fs.watch */
+  __test: { notifyChanged, state, consumeSelfMedia, selfMedia },
+};

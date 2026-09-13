@@ -246,9 +246,15 @@
       A.collapsed.clear();
     },
 
-    addAudioAtPlayhead(asset) {
+    async addAudioAtPlayhead(asset) {
       const p = MTG.state.project;
       if (!p) return;
+      /* 未解码则先解码：durationOf 未命中会回退 5 秒占位、波形空白；
+         与拖放上轨路径（先解码再定时长）一致（M-18） */
+      if (!MTG.audio.durationOf(asset.id) && MTG.storage.ready) {
+        const blob = await MTG.storage.readBlob(asset.path);
+        if (blob) { try { await MTG.audio.load(asset.id, blob); } catch (e) { console.warn('[assets] 音频解码失败', asset.name, e); } }
+      }
       const track = p.tracks.find(t => t.kind === 'audio') || p.tracks[0];
       let dur = MTG.audio.durationOf(asset.id) || 5;
       const start = Math.max(0, MTG.state.playhead);
@@ -274,7 +280,12 @@
         if (kind === 'other') { MTG.toast('跳过不支持的文件：' + f.name, true); continue; }
         const path = 'assets/' + kind + '/' + f.name;
         await MTG.storage.writeFile(path, f);
-        if (!p.assets.some(a => a.path === path)) {
+        const exist = p.assets.find(a => a.path === path);
+        if (exist) {
+          /* 同名导入 = 覆盖磁盘文件：旧缩略图 / 波形缓存必须作废，否则界面显示旧内容（M-19） */
+          A.dropUrl(exist.id);
+          MTG.audio.cache.delete(exist.id);
+        } else {
           p.assets.push({ id: U.uid('as'), name: f.name, kind, path, group: null });
         }
         n++;
@@ -298,8 +309,15 @@
         p.assets.push({ id: U.uid('as'), name: f.name, kind: f.kind, path: f.path, group: null });
         n++;
       }
-      // 清理引用了但磁盘上已不存在的文件
-      p.assets = p.assets.filter(a => files.some(f => f.path === a.path));
+      /* 清理引用了但磁盘上已不存在的文件；引用它们的片段一并清掉，
+         否则时间轴留下悬空片段（M-20） */
+      const keep = new Set(files.map(f => f.path));
+      const removed = new Set();
+      p.assets = p.assets.filter(a => { if (keep.has(a.path)) return true; removed.add(a.id); return false; });
+      if (removed.size) {
+        p.clips = p.clips.filter(c => !(c.assetId && removed.has(c.assetId)));
+        removed.forEach(id => { A.dropUrl(id); MTG.audio.cache.delete(id); });
+      }
       MTG.markDirty();
       MTG.toast(n ? '扫描完成，新增 ' + n + ' 个素材' : '扫描完成，没有新素材');
       await A.render();

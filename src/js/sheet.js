@@ -45,7 +45,7 @@
   const S = (MTG.sheet = {
     active: false,
     pmShot: null,                 // 绘画弹窗正在编辑的镜头
-    cols: COLS,
+    _pmBusy: false,               // 弹窗初始化进行中（防 await 期间重入，M-22）
 
     /* ── 表头（一次性） ── */
     buildHead() {
@@ -361,7 +361,8 @@
       MTG.state.selectedClipIds = new Set([cp.id]);
       MTG.markDirty();
       MTG.render();
-      MTG.toast('已复制到该镜头之后' + (moved ? '（顺推 ' + moved + ' 个片段）' : ''));
+      MTG.toast('已复制到该镜头之后' + (moved ? '（顺推 ' + moved + ' 个片段）' : '')
+        + (cp.boardId ? '（画面与原镜头共用同一帧）' : ''));
     },
 
     delShot() {
@@ -397,42 +398,58 @@
       const p = MTG.state.project;
       if (!p) { MTG.toast('请先打开工程文件夹', true); return; }
       const B = MTG.board;
-      if (S.pmShot) { MTG.toast('绘画窗口已打开，先「存帧并关闭」', true); return; }
-      // 空镜头：先落一张透明底帧，随后直接在上面画
-      if (!shot.boardId) {
-        try { await B.createBlankBoard(shot); } catch (e) { MTG.toast('新建帧失败：' + e.message, true); return; }
+      if (S.pmShot || S._pmBusy) { MTG.toast('绘画窗口已打开，先「存帧并关闭」', true); return; }
+      S._pmBusy = true;      // 防重入：await 期间双击会绕过 S.pmShot 检查，产生孤儿帧（M-22）
+      try {
+        // 空镜头：先落一张透明底帧，随后直接在上面画
+        if (!shot.boardId) {
+          try { await B.createBlankBoard(shot); } catch (e) { MTG.toast('新建帧失败：' + e.message, true); return; }
+        }
+        await B.flush();                                   // 当前画板若有未存笔迹，先落盘
+        MTG.setPlayhead(Math.max(0, shot.start) + 0.001);  // 播放头进该镜头 → 画板自动加载
+        await B.syncToPlayhead();
+        if (!MTG.findBoard(shot.boardId)) { MTG.toast('帧文件丢失，无法绘画', true); return; }
+
+        const no = MTG.board.orderedShots().indexOf(shot) + 1;
+        document.getElementById('pm-title').textContent = '绘画 · 镜 ' + String(no).padStart(2, '0')
+          + (shot.meta && shot.meta.size ? ' · ' + shot.meta.size : '');
+        document.getElementById('pm-sub').textContent = shot.name + ' —— 画完点「存帧并关闭」写入该镜头帧文件';
+
+        const panel = document.getElementById('panel-board');
+        document.getElementById('pm-body').appendChild(panel);
+        document.getElementById('paint-modal').classList.remove('hidden');
+        S.pmShot = shot;
+        /* 画板面板搬进弹窗后舞台尺寸骤变：先让引擎重建画布分辨率再适配（H-8） */
+        requestAnimationFrame(() => { window.dispatchEvent(new Event('resize')); MTG.board.fitView(); });
+        MTG.board.paint();
+      } finally {
+        S._pmBusy = false;
       }
-      await B.flush();                                   // 当前画板若有未存笔迹，先落盘
-      MTG.setPlayhead(Math.max(0, shot.start) + 0.001);  // 播放头进该镜头 → 画板自动加载
-      await B.syncToPlayhead();
-      if (!MTG.findBoard(shot.boardId)) { MTG.toast('帧文件丢失，无法绘画', true); return; }
-
-      const no = MTG.board.orderedShots().indexOf(shot) + 1;
-      document.getElementById('pm-title').textContent = '绘画 · 镜 ' + String(no).padStart(2, '0')
-        + (shot.meta && shot.meta.size ? ' · ' + shot.meta.size : '');
-      document.getElementById('pm-sub').textContent = shot.name + ' —— 画完点「存帧并关闭」写入该镜头帧文件';
-
-      const ws = document.querySelector('.workspace');
-      const panel = document.getElementById('panel-board');
-      document.getElementById('pm-body').appendChild(panel);
-      document.getElementById('paint-modal').classList.remove('hidden');
-      S.pmShot = shot;
-      requestAnimationFrame(() => MTG.board.fitView());
-      MTG.board.paint();
     },
 
     async closePaint(save) {
       const B = MTG.board;
       const panel = document.getElementById('panel-board');
       const modal = document.getElementById('paint-modal');
-      if (save) await B.flush();
-      else await B.reloadCurrent();                     // 放弃本次笔迹（从磁盘重读）
+      if (save) {
+        const ok = await B.flush();
+        if (ok === false) {                             // 写盘失败：别关窗谎报成功（N-B6）
+          MTG.toast('存帧失败，未关闭 —— 检查磁盘后重试', true);
+          return;
+        }
+      } else {
+        await B.reloadCurrent();                        // 放弃本次笔迹（从磁盘重读）
+      }
       const ws = document.querySelector('.workspace');
       if (panel.parentNode !== ws) ws.appendChild(panel);
       modal.classList.add('hidden');
       if (S.pmShot && S.pmShot.boardId) B.dropThumb(S.pmShot.boardId);
       S.pmShot = null;
-      requestAnimationFrame(() => { MTG.board.fitView(); MTG.ui.syncBoardMeta(); });
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new Event('resize'));    // 面板搬回工作台：重建画布（H-8）
+        MTG.board.fitView();
+        MTG.ui.syncBoardMeta();
+      });
       MTG.render();
     },
 

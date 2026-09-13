@@ -46,11 +46,23 @@
         : '点「打开工程文件夹」：选择一个文件夹，有 montage.json 就打开，没有就新建工程';
     },
     syncColor(hex) {
+      if (!hex) hex = MTG.state.color;          // 无参调用兜底（引擎 onColor 路径）
       MTG.state.color = hex;
       $('swatch').style.background = hex;
       const hsv = MTG.state.hsv;
       $('f-h').value = hsv.h; $('f-s').value = hsv.s; $('f-v').value = hsv.v;
       if (document.activeElement !== $('f-hex')) $('f-hex').value = hex;
+      /* 推给绘画引擎：拾色器 / 数字字段 / 色板改色必须真正落到画笔。
+         判重防回声：引擎 setColor → onColor → syncColor 时颜色已相同，不再回推。 */
+      const e = window.__fabulaEngine;
+      if (e && e.setColor && e.getColor && /^#[0-9a-fA-F]{6}$/.test(hex)) {
+        const cur = e.getColor();
+        const r = parseInt(hex.slice(1, 3), 16) / 255;
+        const g = parseInt(hex.slice(3, 5), 16) / 255;
+        const b = parseInt(hex.slice(5, 7), 16) / 255;
+        const same = Math.abs(cur[0] - r) < 0.004 && Math.abs(cur[1] - g) < 0.004 && Math.abs(cur[2] - b) < 0.004;
+        if (!same) e.setColor(hex);
+      }
     },
     syncHistory() {
       $('btn-undo').disabled = !MTG.board.undoStack.length;
@@ -142,12 +154,19 @@
       });
       MTG.ui.syncBrushUI();
     },
-    /* 笔刷选中态：右侧笔刷条 + 工具栏笔刷按钮（引擎侧切笔也会回掉到这里） */
+    /* 笔刷选中态：右侧笔刷条 + 工具栏笔刷按钮（引擎侧切笔也会回掉到这里）。
+       高亮以**引擎当前工具**为准并与工具互斥：选抓手时笔刷必须全部熄灭。 */
     syncBrushUI() {
-      const cur = MTG.board.brushId;
+      const BRUSHES = ['pen', 'pencil', 'marker', 'gouache', 'airbrush'];
+      const eng = window.__fabulaEngine;
+      const toolNow = eng ? eng.tool() : 'pen';
+      const isBrush = BRUSHES.indexOf(toolNow) >= 0;
       const box = $('brush-list');
-      if (box) box.querySelectorAll('.brush-chip').forEach(el => el.classList.toggle('active', el.dataset.brush === cur));
-      document.querySelectorAll('.tool[data-brush]').forEach(b => b.classList.toggle('active', b.dataset.brush === cur));
+      if (box) {
+        box.querySelectorAll('.brush-chip').forEach(el => el.classList.toggle('active', isBrush && el.dataset.brush === toolNow));
+      }
+      document.querySelectorAll('.tool[data-brush]').forEach(b => b.classList.toggle('active', isBrush && b.dataset.brush === toolNow));
+      MTG.ui.buildBrushParams();               // 属性面板随工具切换重铺（同工具内不重建）
     },
     setBrush(id) {
       MTG.board.setBrush(id);
@@ -156,34 +175,82 @@
       MTG.ui.syncBrushSliders();
       setTool('brush');
     },
-    /* 各笔刷自带的额外参数（大小/不透明走已有的两个滑杆） */
+    /* 当前工具的属性面板（PS 式）：数据源 = 引擎 panelRows()，按工具动态生成。
+       画笔 → 笔刷参数；涂抹 → 涂抹率/蘸色率/上色率；模糊 → 强度/半径；…… */
     buildBrushParams() {
       const box = $('brush-params');
-      if (!box || !MTG.brushes) return;
+      if (!box) return;
+      const eng = window.__fabulaEngine;
+      const toolId = (MTG.board.engine() || {}).id || '';
+      /* 同一工具不重建（避免滑动参数时打断拖动），换工具才重铺 */
+      if (MTG.ui._propsTool === toolId && box.children.length) return;
+      MTG.ui._propsTool = toolId;
       box.innerHTML = '';
-      const eng = MTG.board.engine();
-      if (!eng) return;
-      ['flow', 'hardness', 'grain', 'scatter'].forEach(key => {
-        if (eng.params.indexOf(key) < 0) return;
-        const meta = MTG.brushes.paramMeta[key];
+      if (!eng || !eng.panelRows) return;
+      let rows = [];
+      try { rows = eng.panelRows() || []; } catch (_) { return; }
+      const SKIP = { size: 1, opacity: 1 };            // 大小/不透明走块内固定滑杆
+      /* 常用参数直接展示；其余（间距/倾角/颗粒/散布…）压缩进「更多参数」折叠区 */
+      const COMMON = {
+        hardness: 1, flow: 1, stabilize: 1,
+        smudgeStrength: 1, smudgeDrag: 1, smudgeColor: 1,
+        blurStrength: 1, blurRadius: 1, warpStrength: 1, fillTolerance: 1,
+      };
+      const more = document.createElement('details');
+      more.className = 'tp-more';
+      more.innerHTML = '<summary>更多参数</summary>';
+      let moreCount = 0;
+      const persist = () => {
+        try { if (MTG.brushes && MTG.board.bp) MTG.brushes.saveParams(toolId, MTG.board.bp); } catch (_) {}
+      };
+      rows.forEach(r => {
+        if (r.kind === 'probe') return;
+        if (r.kind === 'sect') {
+          if (r.group === 'core') return;              // "笔刷"组标题由块标题承担
+          const h = document.createElement('div');
+          h.className = 'tp-sect';
+          h.textContent = r.title;
+          more.appendChild(h); moreCount++;
+          return;
+        }
+        if (r.kind === 'note') {
+          const n = document.createElement('div');
+          n.className = 'tp-note';
+          n.textContent = r.text;
+          more.appendChild(n); moreCount++;
+          return;
+        }
+        if (SKIP[r.key]) return;
         const row = document.createElement('div');
         row.className = 'slider-row';
         const lb = document.createElement('label');
-        lb.textContent = meta.label;
-        const inp = document.createElement('input');
-        inp.type = 'range';
-        inp.min = meta.min; inp.max = meta.max; inp.step = meta.step;
-        inp.value = Math.round((MTG.board.bp[key] || 0) * 100);
-        const val = document.createElement('span');
-        val.textContent = inp.value;
-        inp.oninput = () => {
-          MTG.board.bp[key] = (+inp.value) / 100;
-          val.textContent = inp.value;
-          MTG.brushes.saveParams(MTG.board.brushId, MTG.board.bp);
-        };
-        row.appendChild(lb); row.appendChild(inp); row.appendChild(val);
-        box.appendChild(row);
+        lb.textContent = r.label;
+        row.appendChild(lb);
+        if (r.kind === 'check') {
+          const inp = document.createElement('input');
+          inp.type = 'checkbox';
+          inp.checked = !!r.obj[r.key];
+          inp.onchange = () => { r.obj[r.key] = inp.checked; persist(); };
+          row.appendChild(inp);
+        } else {
+          const inp = document.createElement('input');
+          inp.type = 'range';
+          inp.min = r.min; inp.max = r.max; inp.step = r.step;
+          inp.value = r.obj[r.key];
+          const val = document.createElement('span');
+          const fmt = () => (eng.fmtPanelVal ? eng.fmtPanelVal(r) : String(r.obj[r.key]));
+          val.textContent = fmt();
+          inp.oninput = () => {
+            r.obj[r.key] = +inp.value;
+            val.textContent = fmt();
+            persist();
+          };
+          row.appendChild(inp); row.appendChild(val);
+        }
+        (COMMON[r.key] ? box : more).appendChild(row);
+        if (!COMMON[r.key]) moreCount++;
       });
+      if (moreCount) box.appendChild(more);
     },
     syncBrushSliders() {
       const bp = MTG.board.bp;
@@ -228,13 +295,51 @@
   };
 
   /* ══════════ 工程打开 / 保存 ══════════ */
+  /* 切工程与外部同步互斥（N-A6）：切工程在多个 await 之间若到达广播，
+     两路 loadProject/applyProject 会交错、极端时序回写旧快照。 */
+  let switchingProject = false;
+  let externalPending = null;      // 同步进行中又到达的广播：补跑一次（N-B1）
+
+  function flushPendingExternal() {
+    if (!externalPending) return;
+    const next = externalPending;
+    externalPending = null;
+    setTimeout(() => { reloadExternal(next).catch((err) => console.warn('[app] 外部变更同步失败', err)); }, 60);
+  }
+
   async function openFolder() {
+    if (switchingProject) return;
+    switchingProject = true;
+    try { await openFolderInner(); }
+    finally { switchingProject = false; flushPendingExternal(); }
+  }
+
+  async function openFolderInner() {
+    /* 切工程前先把当前工程的未存笔迹落盘：openDialog 一返回，主进程的工程根就换了，
+       之后再 flush 会把旧工程的笔迹写进新工程（旧工程最后几笔静默丢失） */
+    if (MTG.storage.ready && MTG.state.project) {
+      try {
+        await MTG.board.flush();
+        if (MTG.state.dirty) await MTG.storage.saveProject(MTG.state.project);
+      } catch (err) {
+        console.warn('[app] 切工程前保存失败', err);
+      }
+    }
     const mode = await MTG.storage.openFolder();
     if (!mode) return;
     // 切换工程：先把上一个工程的缓存（blob URL / 洋葱皮 / 缩略图）全部释放
     MTG.board.resetCaches();
     MTG.assets.resetCaches();
-    let proj = await MTG.storage.loadProject();
+    let proj = null;
+    try {
+      proj = await MTG.storage.loadProject();
+    } catch (err) {
+      if (err && err.parseFailed) {
+        MTG.toast('工程文件损坏，已中止打开（不覆盖原文件）', true);   // 别把损坏文件当新工程重建（M-1）
+        return;
+      }
+      throw err;
+    }
     if (!proj) {
       proj = MTG.newProject(MTG.storage.dirName);
       await MTG.storage.saveProject(proj);
@@ -263,13 +368,26 @@
     await MTG.board.syncToPlayhead();
   }
 
-  const autosave = U.debounce(async () => {
-    if (MTG.board.dirty) await MTG.board.flush();
-    if (MTG.state.dirty && MTG.storage.ready && MTG.state.project) {
-      await MTG.storage.saveProject(MTG.state.project);
-      MTG.ui.syncProject();
+  /* 自动保存统一入口：落笔 debounce（4s）与设置的间隔两条触发源共用同一份串行逻辑，
+     避免两条路径并发写 montage.json 交错撕裂（L-6） */
+  let saving = false, saveAgain = false;
+  async function saveTick() {
+    if (saving) { saveAgain = true; return; }
+    saving = true;
+    try {
+      if (MTG.board.dirty) await MTG.board.flush();
+      if (MTG.state.dirty && MTG.storage.ready && MTG.state.project) {
+        await MTG.storage.saveProject(MTG.state.project);
+        MTG.ui.syncProject();
+      }
+    } catch (err) {
+      console.warn('[app] 自动保存失败', err);
+    } finally {
+      saving = false;
+      if (saveAgain) { saveAgain = false; saveTick(); }
     }
-  }, 4000);
+  }
+  const autosave = U.debounce(saveTick, 4000);
   const origMark = MTG.markDirty;
   MTG.markDirty = function () { origMark(); autosave(); };
 
@@ -287,9 +405,27 @@
       await MTG.storage.saveProject(MTG.state.project);
       MTG.toast('工程已保存');
     };
-    $('btn-export').onclick = () => {
+    $('btn-export').onclick = async () => {
       const p = MTG.state.project;
-      if (!p) return;
+      if (!p) { MTG.toast('请先打开工程文件夹', true); return; }
+      const exp = window.fabula && window.fabula.exp;
+      if (exp && exp.shotFiles) {
+        /* 桌面版导出（M-13）：系统对话框选目录，按镜头顺序输出 01.png…；先落盘保证是最新内容 */
+        try {
+          await MTG.board.flush();
+          if (MTG.state.dirty) await MTG.storage.saveProject(p);
+          const rels = MTG.board.orderedBoardClips()
+            .map(c => (MTG.findBoard(c.boardId) || {}).path).filter(Boolean);
+          if (!rels.length) { MTG.toast('时间轴还没有带画面的镜头', true); return; }
+          const r = await exp.shotFiles(rels);
+          if (r && r.ok) MTG.toast('已导出 ' + r.count + ' 张到 ' + r.dir);
+          else if (!(r && r.canceled)) MTG.toast('导出失败：' + ((r && r.error) || '未知错误'), true);
+        } catch (err) {
+          MTG.toast('导出失败：' + ((err && err.message) || err), true);
+        }
+        return;
+      }
+      /* 浏览器模式：下载工程 JSON */
       U.download((p.name || 'montage') + '.montage.json', new Blob([JSON.stringify(p, null, 2)], { type: 'application/json' }));
       MTG.toast('已导出工程 JSON（二进制素材需随文件夹一起拷贝）');
     };
@@ -313,7 +449,23 @@
     };
 
     /* 素材库 */
-    $('btn-import-media').onclick = () => $('file-media').click();
+    $('btn-import-media').onclick = async () => {
+      const imp = window.fabula && window.fabula.assets && window.fabula.assets.importDialog;
+      if (imp) {
+        /* 桌面版导入（M-14）：走系统对话框（含 magic 嗅探与复制进 assets/），
+           落盘后 rescan 让渲染端模型看到新素材 */
+        try {
+          const r = await imp();
+          if (!r) return;                             // 用户取消
+          await MTG.assets.rescan();
+          MTG.toast('已导入 ' + (r.added || 0) + ' 个素材' + (r.skipped ? '，跳过 ' + r.skipped + ' 个' : ''));
+        } catch (err) {
+          MTG.toast('导入失败：' + ((err && err.message) || err), true);
+        }
+        return;
+      }
+      $('file-media').click();
+    };
     $('file-media').onchange = async e => {
       await MTG.assets.importFiles(e.target.files);
       e.target.value = '';
@@ -378,8 +530,7 @@
     };
     bindSlider('b-size', 'size');
     bindSlider('b-opacity', 'opacity');
-    bindSlider('b-pressure', 'pressure');
-    $('b-pt').onchange = e => { MTG.state.brush.usePressure = e.target.checked; };
+    /* 压感相关滑杆/复选已删：它们写的引擎键不存在（N-A8）；压感参数在设置面板「笔刷」页 */
 
     /* 洋葱皮 */
     const onion = () => { MTG.board.preloadOnion(); MTG.board.paint(); MTG.ui.syncBoardMeta(); };
@@ -407,13 +558,17 @@
     const applySize = (w2, h2) => {
       const p = MTG.state.project;
       if (!p) { MTG.toast('请先打开工程文件夹', true); return; }
-      w2 = U.clamp(Math.round(w2) || 1280, 64, 4096);
-      h2 = U.clamp(Math.round(h2) || 720, 64, 4096);
+      const rawW = Math.round(+w2), rawH = Math.round(+h2);
+      const badW = !isFinite(rawW) || rawW <= 0, badH = !isFinite(rawH) || rawH <= 0;
+      w2 = U.clamp(badW ? 1280 : rawW, 64, 4096);
+      h2 = U.clamp(badH ? 720 : rawH, 64, 4096);
+      const adjusted = badW || badH || rawW !== w2 || rawH !== h2;   // 0/NaN/越界会被静默改写，提示要说清（L-8）
       if (p.boardW === w2 && p.boardH === h2) return;
       MTG.board.applySize(w2, h2);
       p.boardW = w2; p.boardH = h2;
       MTG.markDirty();
-      MTG.toast('画幅已改为 ' + w2 + '×' + h2 + '，已有帧按新画幅缩放显示');
+      MTG.toast('画幅已改为 ' + w2 + '×' + h2
+        + (adjusted ? '（原输入无效或超出 64–4096，已按此值处理）' : '') + '，已有帧按新画幅缩放显示');
     };
     sizeSel.onchange = () => {
       if (sizeSel.value === 'custom') { custom.classList.remove('hidden'); return; }
@@ -523,7 +678,7 @@
       'cmd.brushDown': () => stepBrush(-1),
       'cmd.radial': () => MTG.radial.show()
     };
-    ['brush', 'eraser', 'line', 'rect', 'eyedrop', 'hand', 'zoom', 'lasso'].forEach(t => {
+    ['brush', 'eraser', 'line', 'rect', 'eyedrop', 'hand', 'zoom', 'lasso', 'smudge', 'blur', 'warp'].forEach(t => {
       acts['tool.' + t] = () => setTool(t);
     });
     (MTG.brushes ? MTG.brushes.list : []).forEach(b => {
@@ -581,11 +736,132 @@
       }
     });
 
-    window.addEventListener('beforeunload', async () => {
-      await MTG.board.flush();                       // 落笔先存盘，再存工程
-      if (MTG.state.dirty && MTG.storage.ready) await MTG.storage.saveProject(MTG.state.project);
-    });
+    /* 关窗落盘（H-5）：Electron 主进程在真正关闭前先广播 app:before-close，
+       渲染端 flush 完成后再放行 —— 异步写在 beforeunload 里不可靠，这里才等得到。
+       无桥环境（纯浏览器）保留 beforeunload 尽力而为。 */
+    if (window.fabula && window.fabula.app && window.fabula.app.onBeforeClose) {
+      window.fabula.app.onBeforeClose(async () => {
+        try {
+          await MTG.board.flush();
+          if (MTG.state.dirty && MTG.storage.ready) await MTG.storage.saveProject(MTG.state.project);
+        } catch (err) { console.warn('[app] 关窗保存失败', err); }
+        try { window.fabula.app.closeReady(); } catch (_) {}
+      });
+    } else {
+      window.addEventListener('beforeunload', () => {
+        if (!MTG.board.dirty && !MTG.state.dirty) return;
+        MTG.board.flush();                             // 尽力而为：浏览器不保证异步完成
+        if (MTG.storage.ready) MTG.storage.saveProject(MTG.state.project);
+      });
+    }
+
+    /* Agent / 外部进程改动 fabula.json → 主进程广播 → 这里重载（H-1）。
+       只认 external：自己写盘的回环不触发。 */
+    if (window.fabula && window.fabula.project && window.fabula.project.onChanged) {
+      window.fabula.project.onChanged((info) => {
+        if (!info || !info.external) return;
+        reloadExternal(info).catch((err) => console.warn('[app] 外部变更同步失败', err));
+      });
+    }
     window.addEventListener('resize', U.debounce(() => { MTG.timeline.render(); MTG.board.fitView(); }, 150));
+  }
+
+  /* 外部（Agent/MCP/手改）改动工程文件后的同步（H-1/H-2）：
+     · montage.json 变了 → 与内存**合并**（本地优先、外部新增并集），两边都不丢；
+     · fabula.json 变了 → 只提示（它现在只承载冒烟自检模型）。 */
+  let externalReloading = false;
+  async function reloadExternal(info) {
+    const sources = (info && Array.isArray(info.sources)) ? info.sources
+      : (info && info.external ? ['fabula'] : []);
+    if (!sources.length) return;
+    /* 与切工程互斥；同步进行中到达的广播记下补跑（N-A6/N-B1） */
+    if (switchingProject || externalReloading) { externalPending = info || {}; return; }
+    if (!MTG.storage.ready) return;
+    if (!sources.includes('montage')) {
+      if (sources.includes('media')) { await refreshMedia(info && info.files); return; }   // 纯换图：轻量刷新（N-A5）
+      MTG.toast && MTG.toast('外部更新了工程数据（fabula.json）');
+      return;
+    }
+    externalReloading = true;
+    try {
+      let disk = null;
+      try {
+        disk = await MTG.storage.loadProject();
+      } catch (err) {
+        if (err && err.parseFailed) {   // 外部可能正写到一半：留给下一轮通知，不打断
+          MTG.toast && MTG.toast('工程文件暂不可解析（可能正在写入），稍后自动重试', true);
+          return;
+        }
+        throw err;
+      }
+      if (!disk) return;
+      MTG.migrateProject(disk);
+      const mem = MTG.state.project;
+      const dirty = !!(MTG.board.dirty || MTG.state.dirty);
+      if (mem && MTG.board.dirty) await MTG.board.flush();   // 帧图未存：先写 PNG（与 JSON 无关，不覆盖 Agent 的改动）
+      /* 本地无未存编辑（最常见）：直接采纳磁盘版；双方都改过：并集合并 */
+      const merged = (mem && dirty) ? mergeProjects(mem, disk) : disk;
+      if (mem && JSON.stringify(merged) === JSON.stringify(mem)) {
+        MTG.toast && MTG.toast('检测到外部更新（内容与本地一致）');
+        return;
+      }
+      MTG.board.resetCaches();
+      MTG.assets.resetCaches();
+      MTG.state.project = merged;
+      MTG.state.selectedClipIds = new Set();
+      if (!mem) MTG.state.playhead = 0;
+      if (mem && dirty) {
+        await MTG.storage.saveProject(merged);   // 合并结果写回：Agent 的新增与本地编辑一起持久化
+      }
+      await applyProject();
+      await MTG.assets.rescan();
+      MTG.render();
+      MTG.toast && MTG.toast(dirty
+        ? '已同步 Agent 更新（本地编辑已合并且保留）'
+        : '已同步 Agent 更新：' + merged.name);
+    } finally {
+      externalReloading = false;
+      flushPendingExternal();          // 期间积压的广播：补跑一次（N-B1）
+    }
+  }
+
+  /* Agent 换了画面/素材文件（JSON 未变）：作废缓存并轻量刷新，不重载工程模型（N-A5）。
+     · 只有「当前帧文件确实在外部改动清单里」才重读它并提示 —— 其余静默刷新；
+     · 重读保留撤销栈（外部刷新不该清掉用户的撤销历史）；
+     · 用户自己的保存（flush）已由主进程自写抑制吞掉，不会走到这里。 */
+  async function refreshMedia(files) {
+    const list = Array.isArray(files) ? files : [];
+    MTG.board.thumbCache.forEach((u) => URL.revokeObjectURL(u));
+    MTG.board.thumbCache.clear();
+    MTG.board.onionCache.clear();
+    MTG.assets.resetCaches();
+    const b = MTG.state.currentBoardId ? MTG.findBoard(MTG.state.currentBoardId) : null;
+    const curChanged = !!(b && list.includes(b.path));
+    if (curChanged && !MTG.board.dirty) {
+      try { await MTG.board.reloadCurrent(true); } catch (err) { console.warn('[app] 重读当前帧失败', err); }
+    }
+    MTG.board.rebuildBackdrop();
+    MTG.timeline.render();
+    await MTG.assets.render();
+    if (MTG.sheet && MTG.sheet.active) MTG.sheet.render();
+    if (MTG.story && MTG.story.active) MTG.story.render();
+    if (curChanged && !MTG.board.dirty) MTG.toast && MTG.toast('当前镜头画面已被外部更新');
+  }
+
+  /* 并集合并（H-2）：以本地为基（用户正在编辑的字段优先），把磁盘上按 id
+     新增的 tracks/groups/boards/assets/clips 补进来。删除冲突无法区分，保留本地。 */
+  function mergeProjects(mem, disk) {
+    const out = JSON.parse(JSON.stringify(mem));
+    const union = (key) => {
+      const have = new Set((out[key] || []).map((x) => x.id));
+      for (const it of (disk[key] || [])) {
+        if (!have.has(it.id)) (out[key] = out[key] || []).push(it);
+      }
+    };
+    union('tracks'); union('groups'); union('boards'); union('assets');
+    const cids = new Set((out.clips || []).map((c) => c.id));
+    for (const c of (disk.clips || [])) if (!cids.has(c.id)) out.clips.push(c);
+    return out;
   }
 
   /* [ / ] 调笔刷大小：小笔小步、大笔大步，跟 PS 一样 */
@@ -613,15 +889,9 @@
     clearInterval(autosaveTimer);
     const sec = +MTG.settings.get('autosave') || 0;
     if (!sec) return;
-    autosaveTimer = setInterval(async () => {
+    autosaveTimer = setInterval(() => {
       if (!MTG.state.project) return;
-      try {
-        await MTG.board.flush();
-        if (MTG.state.dirty && MTG.storage.ready) {
-          await MTG.storage.saveProject(MTG.state.project);
-          MTG.state.dirty = false;
-        }
-      } catch (e) {}
+      saveTick();                    // 与落笔 debounce 共用串行保存（L-6）
     }, sec * 1000);
   }
 
@@ -629,7 +899,13 @@
     // 离开套索工具时把还浮着的选区内容落回画面，避免存盘时丢失
     if (MTG.board.sel && MTG.board.sel.float && t !== 'lasso') MTG.board.commitSel();
     MTG.state.tool = t;
+    MTG.board.setTool(t);                    // 通知引擎（此前漏了转发：点工具按钮引擎毫无反应）
     document.querySelectorAll('.tool[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
+    const st = $('stage');                   // 导航类工具用系统光标（抓取/缩放），其余交给引擎自绘
+    if (st) {
+      st.classList.toggle('tool-hand', t === 'hand');
+      st.classList.toggle('tool-zoom', t === 'zoom');
+    }
     MTG.board.syncCursor();
     MTG.board.refreshRing();
   }
@@ -651,6 +927,16 @@
     }
   }
 
+  /* 布局变化（拖分割条 / 弹窗搬 DOM）后重建引擎画布：#gl/#ov 的像素尺寸跟随舞台。
+     引擎同步监听 window resize；rAF 节流保证每帧最多一次（H-8）。 */
+  function sizeBoardSoon() {
+    if (sizeBoardSoon._p) return;
+    sizeBoardSoon._p = requestAnimationFrame(() => {
+      sizeBoardSoon._p = 0;
+      window.dispatchEvent(new Event('resize'));
+    });
+  }
+
   /* 分割条拖动：horizontal=true 时取 dx */
   function dragSplitter(el, fn, horizontal) {
     let last = 0, on = false;
@@ -663,6 +949,7 @@
       const cur = horizontal ? e.clientX : e.clientY;
       fn(cur - last);
       last = cur;
+      sizeBoardSoon();          // 布局变了：重建引擎画布尺寸（H-8）
     });
     const up = e => {
       on = false; el.classList.remove('dragging');
@@ -685,6 +972,7 @@
     MTG.picker.onChange = hex => MTG.ui.syncColor(hex);
     MTG.picker.set(MTG.state.color);
     MTG.picker.renderSwatches();
+    MTG.ui.syncColor(MTG.state.color);      // 启动时推一次：首帧画笔色与 UI 一致
     MTG.board.init();
     /* 引擎启动时还没读到统一偏好（settings 在其后加载），这里补套一次 */
     if (window.__fabulaEngine && window.__fabulaEngine.applyPenPrefs) {

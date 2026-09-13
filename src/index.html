@@ -1,8 +1,12 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- CSP（H-6）：全部脚本/样式都是同源外链，零内联零 eval。
+     fabula: 用于工程文件（图片/音频经 fabula://proj 读取），data:/blob: 用于导出与缩略图。 -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' fabula: data: blob:; media-src 'self' fabula: data: blob:; connect-src 'self' fabula: data: blob:; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
 <title>Montage · 分镜台</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
@@ -86,7 +90,7 @@
         <div class="board-tools">
           <!-- 笔刷组：五支笔直接可选 -->
           <span class="bt-group" title="笔刷：秀丽笔 / 铅笔 / 马克笔 / 水粉 / 喷枪">
-            <button class="tool active" data-brush="pen" title="秀丽笔 (B)">
+            <button class="tool active" data-brush="pen" title="秀丽笔（B = 画笔工具）">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c4 3 7 7 7 11a7 7 0 1 1-14 0c0-4 3-8 7-11z"/></svg>
             </button>
             <button class="tool" data-brush="pencil" title="铅笔 (P)">
@@ -134,6 +138,15 @@
             <button class="tool" data-tool="lasso" title="套索 (Q)：圈出选区 → 可移动内容 / 填充 / 删除，绘制只影响选区内">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.7 14.47a10 8 0 1 1 3.12 2.37"/><path d="M7 22a5 5 0 0 1-2-3.99"/></svg>
             </button>
+            <button class="tool" data-tool="smudge" title="涂抹 (S)：把颜色往外拖，混色过渡">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18c3 0 4-3 6-6s4-6 8-6"/><circle cx="14" cy="6" r="2.6"/></svg>
+            </button>
+            <button class="tool" data-tool="blur" title="模糊 (R)：柔化局部细节">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 4v4M12 16v4M4 12h4M16 12h4M7 7l3 3M14 14l3 3M17 7l-3 3M10 14l-3 3"/></svg>
+            </button>
+            <button class="tool" data-tool="warp" title="液化 (W)：推开 / 拉拢像素（Shift+W 切换模式）">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M4 12c4-4 12 4 16 0"/><path d="M4 18h16"/></svg>
+            </button>
           </span>
 
           <!-- 历史组 -->
@@ -153,7 +166,7 @@
             <button class="btn tiny" id="btn-new-board" title="新建一帧分镜">新建帧</button>
             <button class="btn tiny" id="btn-save-board" title="把画板内容写回当前分镜帧">存帧</button>
             <button class="btn tiny ghost" id="btn-clear-board" title="清空当前层">清层</button>
-            <button class="btn tiny" id="btn-onion" title="洋葱皮：显示前后帧重影">洋葱皮</button>
+            <button class="btn tiny active" id="btn-onion" title="洋葱皮：显示前后帧重影">洋葱皮</button>
           </span>
 
           <!-- 画幅组（推到最右） -->
@@ -221,8 +234,7 @@
             <div id="brush-params"></div>
             <div class="slider-row"><label>大小</label><input id="b-size" type="range" min="1" max="200" value="14"><span id="b-size-v">14</span></div>
             <div class="slider-row"><label>不透明</label><input id="b-opacity" type="range" min="5" max="100" value="100"><span id="b-opacity-v">100</span></div>
-            <div class="slider-row"><label>压感</label><input id="b-pressure" type="range" min="0" max="100" value="85"><span id="b-pressure-v">85</span></div>
-            <label class="chk sm"><input id="b-pt" type="checkbox" checked><span>启用数位板压感</span></label>
+            <!-- 压感参数（死区/饱和点/速度参考）在 设置 → 笔刷 页；这里不放无消费者的滑杆（N-A8） -->
           </div>
 
           <div class="side-block hidden" id="sel-block">
@@ -237,10 +249,10 @@
           </div>
           <div class="side-block">
             <div class="side-title">洋葱皮</div>
-            <label class="chk sm"><input id="onion-on" type="checkbox"><span>显示前后帧重影</span></label>
+            <label class="chk sm"><input id="onion-on" type="checkbox" checked><span>显示前后帧重影</span></label>
             <div class="slider-row"><label>前</label><input id="onion-before" type="range" min="0" max="5" value="1"><span id="onion-before-v">1</span></div>
             <div class="slider-row"><label>后</label><input id="onion-after" type="range" min="0" max="5" value="1"><span id="onion-after-v">1</span></div>
-            <div class="slider-row"><label>不透明</label><input id="onion-opacity" type="range" min="5" max="80" value="35"><span id="onion-opacity-v">35</span></div>
+            <div class="slider-row"><label>不透明</label><input id="onion-opacity" type="range" min="5" max="80" value="45"><span id="onion-opacity-v">45</span></div>
             <div class="hint">前帧红 · 后帧蓝，不写入帧文件</div>
           </div>
 
@@ -324,7 +336,7 @@
   <section id="view-story" class="view-root hidden">
     <div class="sheet-toolbar">
       <span class="ph-title">故事板</span>
-      <button id="st-slide" class="btn tiny"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" style="vertical-align:-1px;margin-right:3px"><path d="M6 4l14 8-14 8z"/></svg>放映</button>
+      <button id="st-slide" class="btn tiny"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>放映</button>
       <span class="divider"></span>
       <span class="hint">格子</span>
       <button class="btn tiny" data-size="sm">小</button>
@@ -332,6 +344,9 @@
       <button class="btn tiny" data-size="lg">大</button>
       <span class="divider"></span>
       <label class="chk sm"><input id="st-text" type="checkbox" checked><span>显示文字</span></label>
+      <span class="divider"></span>
+      <button id="st-export-png" class="btn tiny ghost" title="导出当前故事板为 PNG（系统对话框选保存位置）">导出图</button>
+      <button id="st-export-pdf" class="btn tiny ghost" title="导出当前故事板为 PDF">导出 PDF</button>
       <span class="divider"></span>
       <span class="hint">点画面 = 绘制该镜头 · 双击卡片 = 跳到时间轴</span>
       <div class="tb-spacer"></div>

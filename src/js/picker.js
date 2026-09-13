@@ -45,12 +45,17 @@
       P.paint();
 
       canvas.addEventListener('pointerdown', e => {
+        if (e.button !== 0) return;               // 右键 / 中键不拖色环（L-25）
         canvas.setPointerCapture(e.pointerId);
-        P.dragging = P.hitTest(e) || (dist(e) >= g.rIn ? 'ring' : 'tri');
+        P.dragging = P.hitTest(e);                // hitTest 已含内环/三角判定（原来的 || 分支是死代码，L-25）
         P.handle(e);
       });
       canvas.addEventListener('pointermove', e => { if (P.dragging) P.handle(e); });
-      const end = e => { P.dragging = null; try { canvas.releasePointerCapture(e.pointerId); } catch (err) {} };
+      const end = e => {
+        P.dragging = null;
+        try { canvas.releasePointerCapture(e.pointerId); } catch (err) {}
+        P.pushSwatch(MTG.state.color);        // 一次取色结束才记入最近色板（N-B3）
+      };
       canvas.addEventListener('pointerup', end);
       canvas.addEventListener('pointercancel', end);
     },
@@ -188,12 +193,17 @@
       P.drawTriangle();
       P.paint();
     },
+    /* 记入最近色板（localStorage 环形 12 色；与 renderSwatches 的读取端闭环，N-B3） */
     pushSwatch(hex) {
-      let list = [];
-      try { list = JSON.parse(localStorage.getItem('montage.swatches') || '[]'); } catch (e) {}
-      list = [hex].concat(list.filter(c => c.toLowerCase() !== hex.toLowerCase())).slice(0, 12);
-      localStorage.setItem('montage.swatches', JSON.stringify(list));
-      P.renderSwatches();
+      if (!hex || !/^#[0-9a-fA-F]{6}$/.test(hex)) return;
+      try {
+        let list = JSON.parse(localStorage.getItem('montage.swatches') || '[]');
+        if (!Array.isArray(list)) list = [];
+        if (list[0] === hex) return;                 // 最近一个就是它：不重复写
+        list = [hex].concat(list.filter(c => String(c).toLowerCase() !== hex.toLowerCase())).slice(0, 12);
+        localStorage.setItem('montage.swatches', JSON.stringify(list));
+        P.renderSwatches();
+      } catch (_) {}
     },
     renderSwatches() {
       const box = document.getElementById('swatches');
@@ -209,7 +219,7 @@
         const i = document.createElement('i');
         i.style.background = c;
         i.title = c;
-        i.onclick = () => P.set(c);
+        i.onclick = () => { P.set(c); P.onChange && P.onChange(c); P.pushSwatch(c); };
         box.appendChild(i);
       });
     }

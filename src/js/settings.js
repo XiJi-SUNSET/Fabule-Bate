@@ -11,22 +11,18 @@
   const DEFAULTS = {
     /* 外观 */
     theme: 'dark',
-    /* 画板 */
-    paper: '#f5f0ea',        // 画布底色
-    showRing: true,          // 笔尖光标环
-    showRingNum: true,       // 环上标尺寸数字
-    invertWheel: false,      // 滚轮缩放反向
+    /* 画板（只保留有真实消费者的项：光标环/纸纹等旧键已随审计清理，M-15） */
     maxUndo: 16,             // 撤销栈深
-    gpuEffect: true,         // 涂抹 / 模糊走 WebGL2（关掉则强制 CPU 路径）
-    /* 笔刷 */
-    smoothing: 50,           // 笔迹平滑（perfect-freehand 的 smoothing/streamline）
+    /* 笔刷：压感设备参数（引擎 applyPenPrefs 消费，L-26 补全键契约） */
     stabilizer: 30,          // 抖动修正（0–100）：越大越稳，代价是笔尖略微滞后
     pressureCurve: 'linear', // 笔压曲线：soft（轻压更灵敏）/ linear / hard（重压才明显）
+    penPMin: 0.03,           // 压力死区（引擎 PEN.pMin 出厂值）
+    penPMax: 0.90,           // 压力饱和点（引擎 PEN.pMax 出厂值）
+    penSpeedRef: 2.4,        // 速度→压力的参考速度 px/ms（引擎 PEN.speedRef 出厂值）
     /* 通用 */
     autosave: 0,             // 自动保存间隔（秒），0 = 关
     snap: true,              // 时间轴吸附
     uiFont: 12,              // 界面基础字号（px）
-    paperTex: 100,           // 纸纹颗粒倍率（%）
     /* 快捷键：actionId -> combo，空 = 用动作自带的默认值 */
     keys: {},
     /* 轮盘 */
@@ -57,7 +53,8 @@
   const TOOL_ACTS = [
     ['tool.brush', '画笔', 'B'], ['tool.eraser', '橡皮', 'E'], ['tool.line', '直线', 'L'],
     ['tool.rect', '矩形', 'R'], ['tool.eyedrop', '吸管', 'I'], ['tool.hand', '抓手', 'H'],
-    ['tool.zoom', '缩放工具', 'Z'], ['tool.lasso', '套索', 'Q']
+    ['tool.zoom', '缩放工具', 'Z'], ['tool.lasso', '套索', 'Q'],
+    ['tool.smudge', '涂抹', 'S'], ['tool.blur', '模糊', 'U'], ['tool.warp', '液化', 'W']
   ];
 
   const CMD_ACTS = [
@@ -96,7 +93,10 @@
     /* 笔刷动作：图标直接取 brushes.js 里那一套，避免两边画得不一样 */
     (MTG.brushes && MTG.brushes.list ? MTG.brushes.list : []).forEach(b => {
       list.push({
-        id: 'brush.' + b.id, label: b.label, group: '笔刷', def: '',
+        /* 默认键用引擎笔刷注册表的 key（P/K/G/A）；pen 留空 —— 它的"B"由
+           画笔工具（tool.brush）承担，避免与工具键同键（M-16 残留） */
+        id: 'brush.' + b.id, label: b.label, group: '笔刷',
+        def: b.id === 'pen' ? '' : (b.key || ''),
         icon: svg(b.icon || '')
       });
     });
@@ -169,6 +169,9 @@
     comboOf,
     pretty,
     keyOf(id) {
+      /* 轮盘呼出键的事实来源是 radialKey（录制器写它）：不统一的话
+         用户改绑后 UI 显示新键、实际仍只有默认 V 能呼出（N-A7） */
+      if (id === 'cmd.radial') return S.data.radialKey || 'V';
       const custom = S.data.keys[id];
       if (custom !== undefined) return custom;          // '' = 用户主动清空
       const a = S.action(id);
@@ -186,13 +189,34 @@
       /* 撞键：把旧占用者清掉，避免两个动作抢同一个键 */
       if (combo) {
         for (const a of ACTIONS) {
-          if (a.id !== id && S.keyOf(a.id) === combo) S.data.keys[a.id] = '';
+          if (a.id !== id && S.keyOf(a.id) === combo) {
+            if (a.id === 'cmd.radial') S.data.radialKey = '';   // 轮盘键在 radialKey（N-A7）
+            else S.data.keys[a.id] = '';
+          }
         }
       }
       S.data.keys[id] = combo;
       S.save();
     },
     resetKeys() { S.data.keys = {}; S.save(); },
+
+    /* 工程 JSON 备份（N-B4）：桌面版经系统保存框（export:backupJson）；浏览器版直接下载。
+       替代原先只挂在顶栏「导出」上的 JSON 下载——桌面分支改走帧序列后它消失了。 */
+    backupJson() {
+      const p = MTG.state.project;
+      if (!p) { MTG.toast('请先打开工程文件夹', true); return; }
+      const exp = window.fabula && window.fabula.exp;
+      if (exp && exp.backupJson) {
+        exp.backupJson().then((r) => {
+          if (r && r.ok) MTG.toast('已导出备份：' + r.path);
+          else if (!(r && r.canceled)) MTG.toast('导出失败：' + ((r && r.error) || '未知错误'), true);
+        }).catch((e) => MTG.toast('导出失败：' + ((e && e.message) || e), true));
+        return;
+      }
+      MTG.util.download((p.name || 'montage') + '.montage.json',
+        new Blob([JSON.stringify(p, null, 2)], { type: 'application/json' }));
+      MTG.toast('已导出工程 JSON');
+    },
 
     /* ── 笔刷预设：导出 / 导入 JSON（本工具自己的格式，跨设备或分享给同伴） ── */
     exportBrushPresets() {
@@ -312,38 +336,32 @@
           S.ui.row('自动保存', '落笔后按间隔自动存盘，0 = 关',
             '<input type="number" data-k="autosave" min="0" max="600" step="10" value="' + d.autosave + '"><span class="unit">秒</span>') +
           S.ui.row('时间轴吸附', '拖动片段时对齐播放头 / 相邻边缘',
-            '<label class="chk sm"><input type="checkbox" data-k="snap"' + (d.snap ? ' checked' : '') + '><span>开启</span></label>');
+            '<label class="chk sm"><input type="checkbox" data-k="snap"' + (d.snap ? ' checked' : '') + '><span>开启</span></label>') +
+          S.ui.row('工程 JSON 备份', '把工程文件导出为一份独立拷贝（桌面版弹系统保存框）',
+            '<button class="btn tiny" data-act="backup-json">导出备份</button>');
       },
 
       htmlBoard() {
         const d = S.data;
-        return S.ui.row('画布底色', '纸张颜色，不影响导出内容',
-            '<input type="color" data-k="paper" value="' + d.paper + '">') +
-          S.ui.row('笔尖光标环', '画笔下显示笔刷覆盖范围',
-            '<label class="chk sm"><input type="checkbox" data-k="showRing"' + (d.showRing ? ' checked' : '') + '><span>显示</span></label>') +
-          S.ui.row('环上标尺寸', '在光标环下写出当前笔刷大小',
-            '<label class="chk sm"><input type="checkbox" data-k="showRingNum"' + (d.showRingNum ? ' checked' : '') + '><span>显示</span></label>') +
-          S.ui.row('滚轮缩放方向', '勾选后：向上滚 = 缩小',
-            '<label class="chk sm"><input type="checkbox" data-k="invertWheel"' + (d.invertWheel ? ' checked' : '') + '><span>反向</span></label>') +
-          S.ui.row('纸纹强度', '整体颗粒倍率，0 = 完全关掉纸纹',
-            '<input type="range" data-k="paperTex" min="0" max="200" step="10" value="' + d.paperTex + '"><span class="val">' + d.paperTex + '%</span>') +
-          S.ui.row('撤销步数', '越大越占内存',
-            '<input type="number" data-k="maxUndo" min="4" max="64" step="4" value="' + d.maxUndo + '">') +
-          S.ui.row('GPU 加速涂抹 / 模糊', '大笔刷用显卡算，关掉则强制 CPU（排查显示异常时可关）',
-            '<label class="chk sm"><input type="checkbox" data-k="gpuEffect"' + (d.gpuEffect ? ' checked' : '') + '><span>启用</span></label>');
+        return S.ui.row('撤销步数', '越大越占内存',
+          '<input type="number" data-k="maxUndo" min="4" max="64" step="4" value="' + d.maxUndo + '">');
       },
 
       htmlBrush() {
         const d = S.data;
-        return S.ui.row('笔迹平滑', '笔画的几何平滑（越高越圆润）',
-            '<input type="range" data-k="smoothing" min="0" max="100" step="5" value="' + d.smoothing + '"><span class="val">' + d.smoothing + '</span>') +
-          S.ui.row('抖动修正', '手抖补偿：越大线越稳，笔尖会略滞后',
+        return S.ui.row('抖动修正', '手抖补偿：越大线越稳，笔尖会略滞后',
             '<input type="range" data-k="stabilizer" min="0" max="90" step="5" value="' + d.stabilizer + '"><span class="val">' + d.stabilizer + '</span>') +
           S.ui.row('笔压曲线', '压感的响应手感',
             '<select data-k="pressureCurve">' +
               [['linear', '线性'], ['soft', '偏软（轻压就粗）'], ['hard', '偏硬（压重才粗）']]
                 .map(o => '<option value="' + o[0] + '"' + (d.pressureCurve === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') +
             '</select>') +
+          S.ui.row('压力死区', '低于此压力的读数视为未施力',
+            '<input type="range" data-k="penPMin" min="0" max="0.5" step="0.01" value="' + d.penPMin + '"><span class="val">' + d.penPMin + '</span>') +
+          S.ui.row('压力饱和点', '到此压力视为满压，再用力也不会更粗',
+            '<input type="range" data-k="penPMax" min="0.3" max="1" step="0.01" value="' + d.penPMax + '"><span class="val">' + d.penPMax + '</span>') +
+          S.ui.row('速度参考', '无压感时按速度模拟压力的参考速度（px/ms）',
+            '<input type="range" data-k="penSpeedRef" min="1" max="6" step="0.1" value="' + d.penSpeedRef + '"><span class="val">' + d.penSpeedRef + '</span>') +
           S.ui.row('笔刷预设', '导出 / 导入全部笔刷参数（JSON，可分享或备份）',
             '<button class="btn tiny" data-act="brush-export">导出</button>' +
             '<button class="btn tiny ghost" data-act="brush-import">导入</button>') +
@@ -397,7 +415,6 @@
         html += d.radial.map((id, i) =>
           '<div class="set-row"><div class="set-lab">' + dirs[i] + '</div><div class="set-ctl">' +
           '<select data-radial="' + i + '">' + opts + '</select></div></div>').join('');
-        S.ui._radialOpts = opts;
         return html;
       },
 
@@ -451,6 +468,8 @@
             S.ui.render();
           };
         });
+        /* 工程备份 */
+        b.querySelectorAll('[data-act="backup-json"]').forEach(x => { x.onclick = () => S.backupJson(); });
         /* 笔刷预设 导出 / 导入 */
         b.querySelectorAll('[data-act="brush-export"]').forEach(x => { x.onclick = () => S.exportBrushPresets(); });
         b.querySelectorAll('[data-act="brush-import"]').forEach(x => { x.onclick = () => S.importBrushPresets(); });
@@ -497,6 +516,9 @@
         MTG.board.paint && MTG.board.paint();
         MTG.board.refreshRing && MTG.board.refreshRing();
       }
+      /* 压感参数（曲线/死区/饱和点/速度参考）改动立即套用到引擎（L-26） */
+      const eng = window.__fabulaEngine;
+      if (eng && eng.applyPenPrefs) eng.applyPenPrefs();
     }
   });
 
