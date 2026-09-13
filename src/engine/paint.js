@@ -2389,6 +2389,9 @@ function doPan(e) {
   view.x = panStart.vx + (e.clientX - panStart.x) * k;
   view.y = panStart.vy + (e.clientY - panStart.y) * k;
 }
+/* 结束平移（pointerup / pointercancel）：复位状态即可。
+   指针捕获随 pointerup 由浏览器隐式释放，这里无需再手动 release。 */
+function endPan() { panActive = false; }
 
 ovc.addEventListener('wheel', (e) => {
   e.preventDefault();

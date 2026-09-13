@@ -25,14 +25,14 @@
     </div>
 
     <div class="tb-group transport">
-      <button id="btn-goto-start" class="btn icon" title="回到开头">⏮</button>
-      <button id="btn-play" class="btn icon play" title="播放 / 暂停（空格）">▶</button>
-      <button id="btn-stop" class="btn icon" title="停止">■</button>
+      <button id="btn-goto-start" class="btn icon" title="回到开头"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5v14"/><path d="M19 5.5v13L9.5 12z" fill="currentColor" stroke="none"/></svg></button>
+      <button id="btn-play" class="btn icon play" title="播放 / 暂停（空格）"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg></button>
+      <button id="btn-stop" class="btn icon" title="停止"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="5.5" y="5.5" width="13" height="13" rx="1.5"/></svg></button>
       <span id="timecode" class="tc">00:00.00</span>
       <div class="zoom-ctl">
-        <button id="btn-zoom-out" class="btn icon ghost" title="缩小时间轴">−</button>
+        <button id="btn-zoom-out" class="btn icon ghost" title="缩小时间轴"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
         <input id="zoom" type="range" min="8" max="400" value="60" title="时间轴缩放">
-        <button id="btn-zoom-in" class="btn icon ghost" title="放大时间轴">＋</button>
+        <button id="btn-zoom-in" class="btn icon ghost" title="放大时间轴"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
       </div>
       <label class="chk" title="拖动时吸附到播放头 / 相邻块边缘"><input id="snap" type="checkbox" checked><span>吸附</span></label>
     </div>
@@ -42,7 +42,7 @@
     <div class="tb-group">
       <button id="btn-save" class="btn" title="保存工程（Ctrl+S）">保存</button>
       <button id="btn-export" class="btn ghost" title="导出工程 JSON / 图片序列">导出</button>
-      <button id="btn-theme" class="btn icon ghost" title="切换明暗">◐</button>
+      <button id="btn-theme" class="btn icon ghost" title="切换明暗"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="7.5"/><path d="M12 4.5a7.5 7.5 0 0 0 0 15z" fill="currentColor" stroke="none"/></svg></button>
       <button id="btn-settings" class="btn icon ghost" title="设置：快捷键 / 个性化 / 轮盘菜单">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </button>
@@ -84,67 +84,96 @@
       <div class="panel-head">
         <span class="ph-title">画板</span>
         <div class="board-tools">
-          <select id="board-size" class="size-select" title="画布画幅">
-            <option value="1280x720">16:9 · 1280×720</option>
-            <option value="1920x1080">16:9 · 1920×1080</option>
-            <option value="720x1280">9:16 · 720×1280 竖屏</option>
-            <option value="1080x1920">9:16 · 1080×1920 竖屏</option>
-            <option value="1440x1080">4:3 · 1440×1080</option>
-            <option value="1080x1080">1:1 · 1080×1080</option>
-            <option value="custom">自定义…</option>
-          </select>
-          <span id="size-custom" class="size-custom hidden">
-            <input id="size-w" type="number" min="64" max="4096" step="2" value="1280" title="宽">
-            <span>×</span>
-            <input id="size-h" type="number" min="64" max="4096" step="2" value="720" title="高">
-            <button id="size-apply" class="btn tiny">应用</button>
+          <!-- 笔刷组：五支笔直接可选 -->
+          <span class="bt-group" title="笔刷：秀丽笔 / 铅笔 / 马克笔 / 水粉 / 喷枪">
+            <button class="tool active" data-brush="pen" title="秀丽笔 (B)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c4 3 7 7 7 11a7 7 0 1 1-14 0c0-4 3-8 7-11z"/></svg>
+            </button>
+            <button class="tool" data-brush="pencil" title="铅笔 (P)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l3-1 11-11-2-2L5 17z M16 4l2 2 M4 20l1-3"/></svg>
+            </button>
+            <button class="tool" data-brush="marker" title="马克笔 (K)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3h5l1 9-3.5 9L7 12z M8 3h5"/></svg>
+            </button>
+            <button class="tool" data-brush="gouache" title="水粉 (G)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14v13a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3z M9 4V2h6v2 M5 10h14"/></svg>
+            </button>
+            <button class="tool" data-brush="airbrush" title="喷枪 (A)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h8v6H4z M12 11h3 M15 8h5v8h-5z M17 16v4"/></svg>
+            </button>
           </span>
 
-          <button class="tool active" data-tool="brush" title="画笔 (B)">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg>
-            </button>
-          <button class="tool" data-tool="eraser" title="橡皮 (E)">
+          <!-- 工具组 -->
+          <span class="bt-group" title="工具：橡皮 / 线条 / 形状 / 取色 / 导航 / 选区">
+            <button class="tool" data-tool="eraser" title="橡皮 (E)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>
             </button>
-          <button class="tool" data-tool="line" title="直线 (L)">
+            <button class="tool" data-tool="line" title="直线 (L)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19L19 5"/><circle cx="5" cy="19" r="1.7" fill="currentColor" stroke="none"/><circle cx="19" cy="5" r="1.7" fill="currentColor" stroke="none"/></svg>
             </button>
-          <button class="tool" data-tool="rect" title="矩形 (R)">
+            <button class="tool" data-tool="rect" title="矩形 (R)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="6" width="16" height="12" rx="1.5"/></svg>
             </button>
-          <button class="tool" data-tool="eyedrop" title="吸管 (I)">
+            <button class="tool" data-tool="eyedrop" title="吸管 (I)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15.6 3.4l5 5-2 2-5-5z"/><path d="M13.6 8.4l3 3"/><path d="M14 8.5l-8 8-2 4.5 4.5-2 8-8z"/><path d="M4 17l3 3"/></svg>
             </button>
-          <button class="tool" data-tool="hand" title="抓手：移动画布 (H)，或按住空格">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/>
-              <path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/>
-              <path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/>
-              <path d="m7 15l-1.76-1.76a2 2 0 0 0-2.83 2.82l3.6 3.6C7.5 21.6 9.2 22 12 22h2a8 8 0 0 0 8-8V7a2 2 0 0 0-2-2a2 2 0 0 0-2 2v4"/>
-            </svg>
-          </button>
-          <button class="tool" data-tool="zoom" title="缩放工具 (Z)：按住一点拖动——右移放大 / 左移缩小 · 点按放大 · Alt+点按缩小">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
-              <path d="M11 8v6"/><path d="M8 11h6"/>
-            </svg>
-          </button>
-          <button class="tool" data-tool="lasso" title="套索 (Q)：圈出选区 → 可移动内容 / 填充 / 删除，绘制只影响选区内">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.7 14.47a10 8 0 1 1 3.12 2.37"/><path d="M7 22a5 5 0 0 1-2-3.99"/></svg>
-          </button>
-          <span class="divider"></span>
-          <button class="tool" id="btn-undo" title="撤销 (Ctrl+Z)">↶</button>
-          <button class="tool" id="btn-redo" title="重做 (Ctrl+Shift+Z)">↷</button>
-          <span class="divider"></span>
-          <span class="layer-switch">
+            <button class="tool" data-tool="hand" title="抓手：移动画布 (H)，或按住空格">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/>
+                <path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/>
+                <path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/>
+                <path d="m7 15l-1.76-1.76a2 2 0 0 0-2.83 2.82l3.6 3.6C7.5 21.6 9.2 22 12 22h2a8 8 0 0 0 8-8V7a2 2 0 0 0-2-2a2 2 0 0 0-2 2v4"/>
+              </svg>
+            </button>
+            <button class="tool" data-tool="zoom" title="缩放工具 (Z)：按住一点拖动——右移放大 / 左移缩小 · 点按放大 · Alt+点按缩小">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+                <path d="M11 8v6"/><path d="M8 11h6"/>
+              </svg>
+            </button>
+            <button class="tool" data-tool="lasso" title="套索 (Q)：圈出选区 → 可移动内容 / 填充 / 删除，绘制只影响选区内">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.7 14.47a10 8 0 1 1 3.12 2.37"/><path d="M7 22a5 5 0 0 1-2-3.99"/></svg>
+            </button>
+          </span>
+
+          <!-- 历史组 -->
+          <span class="bt-group" title="历史">
+            <button class="tool" id="btn-undo" title="撤销 (Ctrl+Z)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 14 3 9l5-5"/><path d="M3 9h10.5a6 6 0 0 1 0 12H8"/></svg></button>
+            <button class="tool" id="btn-redo" title="重做 (Ctrl+Shift+Z)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m16 14 5-5-5-5"/><path d="M21 9H10.5a6 6 0 0 0 0 12H16"/></svg></button>
+          </span>
+
+          <!-- 图层组 -->
+          <span class="bt-group layer-switch" title="绘制目标图层">
             <button class="layer active" data-layer="fg">线稿层</button>
             <button class="layer" data-layer="bg">背景层</button>
           </span>
-          <span class="divider"></span>
-          <button class="btn tiny" id="btn-new-board" title="新建一帧分镜">新建帧</button>
-          <button class="btn tiny" id="btn-save-board" title="把画板内容写回当前分镜帧">存帧</button>
-          <button class="btn tiny ghost" id="btn-clear-board" title="清空当前层">清层</button>
-          <button class="btn tiny" id="btn-onion" title="洋葱皮：显示前后帧重影">洋葱皮</button>
+
+          <!-- 帧组 -->
+          <span class="bt-group" title="分镜帧">
+            <button class="btn tiny" id="btn-new-board" title="新建一帧分镜">新建帧</button>
+            <button class="btn tiny" id="btn-save-board" title="把画板内容写回当前分镜帧">存帧</button>
+            <button class="btn tiny ghost" id="btn-clear-board" title="清空当前层">清层</button>
+            <button class="btn tiny" id="btn-onion" title="洋葱皮：显示前后帧重影">洋葱皮</button>
+          </span>
+
+          <!-- 画幅组（推到最右） -->
+          <span class="bt-group bt-size" title="画布画幅">
+            <select id="board-size" class="size-select">
+              <option value="1280x720">16:9 · 1280×720</option>
+              <option value="1920x1080">16:9 · 1920×1080</option>
+              <option value="720x1280">9:16 · 720×1280 竖屏</option>
+              <option value="1080x1920">9:16 · 1080×1920 竖屏</option>
+              <option value="1440x1080">4:3 · 1440×1080</option>
+              <option value="1080x1080">1:1 · 1080×1080</option>
+              <option value="custom">自定义…</option>
+            </select>
+            <span id="size-custom" class="size-custom hidden">
+              <input id="size-w" type="number" min="64" max="4096" step="2" value="1280" title="宽">
+              <span>×</span>
+              <input id="size-h" type="number" min="64" max="4096" step="2" value="720" title="高">
+              <button id="size-apply" class="btn tiny">应用</button>
+            </span>
+          </span>
         </div>
       </div>
 
@@ -295,7 +324,7 @@
   <section id="view-story" class="view-root hidden">
     <div class="sheet-toolbar">
       <span class="ph-title">故事板</span>
-      <button id="st-slide" class="btn tiny">▶ 放映</button>
+      <button id="st-slide" class="btn tiny"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" style="vertical-align:-1px;margin-right:3px"><path d="M6 4l14 8-14 8z"/></svg>放映</button>
       <span class="divider"></span>
       <span class="hint">格子</span>
       <button class="btn tiny" data-size="sm">小</button>
@@ -320,9 +349,9 @@
       <span id="sl-no" class="sl-no"></span>
       <span id="sl-meta" class="sl-meta"></span>
       <div class="tb-spacer"></div>
-      <button id="sl-prev" class="btn icon ghost" title="上一镜（←）">←</button>
-      <button id="sl-play" class="btn icon ghost" title="暂停 / 继续（空格）">❙❙</button>
-      <button id="sl-next" class="btn icon ghost" title="下一镜（→）">→</button>
+      <button id="sl-prev" class="btn icon ghost" title="上一镜（←）"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
+      <button id="sl-play" class="btn icon ghost" title="暂停 / 继续（空格）"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="6.5" y="4.5" width="3.6" height="15" rx="1"/><rect x="13.9" y="4.5" width="3.6" height="15" rx="1"/></svg></button>
+      <button id="sl-next" class="btn icon ghost" title="下一镜（→）"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
       <button id="sl-close" class="btn ghost" title="退出放映（Esc）">退出</button>
     </div>
   </div>

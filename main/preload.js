@@ -11,6 +11,10 @@ contextBridge.exposeInMainWorld('fabula', {
     save: (json) => ipcRenderer.invoke('project:save', json),
     current: () => ipcRenderer.invoke('project:current'),
     writeShotImage: (shotId, dataUrl) => ipcRenderer.invoke('project:writeShotImage', shotId, dataUrl),
+    /* 桌面存储后端（storage.js 的 electron 模式用）：相对工程根的读写 */
+    writeFile: (rel, bytes) => ipcRenderer.invoke('project:writeFile', rel, bytes),
+    deleteFile: (rel) => ipcRenderer.invoke('project:deleteFile', rel),
+    listMedia: () => ipcRenderer.invoke('project:listMedia'),
     /* 外部（agent）或自身落盘后的变更通知；回调参数 { external, at } */
     onChanged: (cb) => {
       ipcRenderer.on('project:changed', (_e, info) => cb(info));

@@ -16,6 +16,8 @@
   --red-rgb: 235, 104, 75;
   --blue: #7bbbe3;
   --blue-rgb: 123, 187, 227;
+  --green: #6aa878;
+  --green-rgb: 106, 168, 120;
 
   --bg: #f7e6da;
   --card: rgba(253, 247, 240, 0.62);
@@ -229,7 +231,18 @@ input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border: 0; bo
 
 /* ════════════ 6. 通用面板/按钮（画板） ════════════ */
 .board { min-width: 0; }
-.board-tools { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-left: 8px; }
+/* 画板工具栏（fabula 版）：分组胶囊 + 自动换行，窄窗口也不挤成一行 */
+.board-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: 8px; flex: 1; min-width: 0; }
+.bt-group {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 2px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--stage);
+}
+.bt-group > .tool { border-color: transparent; background: transparent; border-radius: 8px; }
+.bt-group > .tool:hover { background: rgba(var(--red-rgb), 0.14); border-color: transparent; }
+.bt-group > .tool.active { background: var(--red); color: #fff; }
+.bt-size { margin-left: auto; }                 /* 画幅组推到最右 */
+.bt-size .size-select { height: 26px; }
 .tool {
   font: inherit; font-size: 13px; width: 28px; height: 26px; border-radius: 7px; cursor: pointer;
   background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
@@ -238,7 +251,9 @@ input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border: 0; bo
 .tool:hover { border-color: rgba(var(--red-rgb), 0.4); }
 .tool.active { background: var(--red); color: #fff; border-color: transparent; }
 .tool:disabled { opacity: .35; cursor: default; }
-.layer-switch { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.layer-switch { overflow: hidden; }
+.layer-switch .layer:first-child { border-radius: 8px 0 0 8px; }
+.layer-switch .layer:last-child { border-radius: 0 8px 8px 0; }
 .layer {
   font: inherit; font-size: 11px; padding: 4px 9px; cursor: pointer;
   background: transparent; color: var(--text-dim); border: 0;
@@ -371,8 +386,8 @@ textarea.sp-ctl { min-height: 34px; resize: vertical; line-height: 1.45; }
   position: relative; border-bottom: 1px solid var(--border);
   background: var(--track);
 }
-.track.audio { background: linear-gradient(180deg, rgba(var(--blue-rgb), .07), transparent); }
-.track.board { background: linear-gradient(180deg, rgba(var(--red-rgb), .05), transparent); }
+.track.audio { background: rgba(var(--green-rgb), .07); }
+.track.board { background: rgba(var(--red-rgb), .05); }
 .track.drop-target { box-shadow: inset 0 0 0 1px rgba(var(--red-rgb), .55); }
 .track-marks { position: absolute; inset: 0; pointer-events: none; background-image: repeating-linear-gradient(90deg, var(--grid) 0 1px, transparent 1px 100%); }
 
@@ -382,7 +397,7 @@ textarea.sp-ctl { min-height: 34px; resize: vertical; line-height: 1.45; }
   background: rgba(var(--red-rgb), .26); display: flex; align-items: stretch;
   box-shadow: 0 2px 8px rgba(0, 0, 0, .18);
 }
-.clip.audio { background: rgba(var(--blue-rgb), .28); }
+.clip.audio { background: rgba(var(--green-rgb), .28); }
 .clip.image { background: rgba(180, 150, 110, .3); }
 .clip.selected { border-color: var(--red); box-shadow: 0 0 0 1px var(--red), 0 4px 14px rgba(0, 0, 0, .25); z-index: 2; }
 /* 同轨重叠（历史工程数据）：标红提示，用「整理重叠」顺推修复 */

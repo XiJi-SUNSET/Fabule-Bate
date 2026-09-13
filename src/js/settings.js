@@ -257,7 +257,7 @@
                 ['general:常规', 'board:画板', 'brush:笔刷', 'tags:标签', 'keys:快捷键', 'radial:轮盘菜单']
                   .map(t => '<button class="set-tab" data-tab="' + t.split(':')[0] + '">' + t.split(':')[1] + '</button>').join('') +
               '</div>' +
-              '<button class="set-x" title="关闭">✕</button>' +
+              '<button class="set-x" title="关闭"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>' +
             '</div>' +
             '<div class="set-body"></div>' +
             '<div class="set-foot">' +

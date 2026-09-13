@@ -301,7 +301,10 @@
 
     syncPlayBtn() {
       const b = document.getElementById('sl-play');
-      if (b) b.textContent = S.paused ? '▶' : '❙❙';
+      if (!b) return;
+      b.innerHTML = S.paused
+        ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>'
+        : '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="6.5" y="4.5" width="3.6" height="15" rx="1"/><rect x="13.9" y="4.5" width="3.6" height="15" rx="1"/></svg>';
     },
 
     init() {

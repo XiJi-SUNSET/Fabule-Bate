@@ -31,7 +31,9 @@
   MTG.ui = {
     onPlayState(on) {
       const b = $('btn-play');
-      b.textContent = on ? '❙❙' : '▶';
+      b.innerHTML = on
+        ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="6.5" y="4.5" width="3.6" height="15" rx="1"/><rect x="13.9" y="4.5" width="3.6" height="15" rx="1"/></svg>'
+        : '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>';
       b.classList.toggle('on', on);
     },
     syncProject() {
@@ -131,12 +133,21 @@
       MTG.brushes.list.forEach(b => {
         const el = document.createElement('button');
         el.className = 'brush-chip' + (b.id === MTG.board.brushId ? ' active' : '');
+        el.dataset.brush = b.id;
         el.title = b.label;
         el.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" '
           + 'stroke-linecap="round" stroke-linejoin="round">' + (b.icon || '') + '</svg><span>' + b.label + '</span>';
         el.onclick = () => MTG.ui.setBrush(b.id);
         box.appendChild(el);
       });
+      MTG.ui.syncBrushUI();
+    },
+    /* 笔刷选中态：右侧笔刷条 + 工具栏笔刷按钮（引擎侧切笔也会回掉到这里） */
+    syncBrushUI() {
+      const cur = MTG.board.brushId;
+      const box = $('brush-list');
+      if (box) box.querySelectorAll('.brush-chip').forEach(el => el.classList.toggle('active', el.dataset.brush === cur));
+      document.querySelectorAll('.tool[data-brush]').forEach(b => b.classList.toggle('active', b.dataset.brush === cur));
     },
     setBrush(id) {
       MTG.board.setBrush(id);
@@ -329,6 +340,10 @@
     document.querySelectorAll('.tool[data-tool]').forEach(b => {
       b.onclick = () => setTool(b.dataset.tool);
     });
+    /* 工具栏笔刷按钮：点选直接切到该支笔刷 */
+    document.querySelectorAll('.tool[data-brush]').forEach(b => {
+      b.onclick = () => MTG.ui.setBrush(b.dataset.brush);
+    });
     document.querySelectorAll('.layer-switch .layer').forEach(b => {
       b.onclick = () => {
         MTG.state.layer = b.dataset.layer;
@@ -435,7 +450,8 @@
 
     $('btn-theme').onclick = () => {
       const next = document.body.dataset.theme === 'dark' ? 'light' : 'dark';
-      MTG.settings.set('theme', next);      // 走设置：apply 里统一刷主题、存盘、重绘
+      MTG.settings.set('theme', next);      // 先存盘
+      MTG.settings.apply();                 // set 只落盘：主题生效必须再走 apply（与设置面板路径一致）
       MTG.timeline.render();
     };
 

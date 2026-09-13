@@ -172,13 +172,15 @@
 
         const mute = document.createElement('button');
         mute.className = 'th-btn';
-        mute.textContent = tr.muted ? '🔇' : '🔊';
+        mute.innerHTML = tr.muted
+          ? '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 6M21 9l-5 6"/></svg>'
+          : '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>';
         mute.title = '静音';
         mute.onclick = () => { tr.muted = !tr.muted; MTG.markDirty(); MTG.render(); };
 
         const del = document.createElement('button');
         del.className = 'th-btn';
-        del.textContent = '✕';
+        del.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
         del.title = '删除轨道及其片段';
         del.onclick = () => {
           if (p.tracks.length <= 1) { MTG.toast('至少保留一条轨道', true); return; }
@@ -444,7 +446,7 @@
       const total = rec.buffer.duration || 1;
       const peaks = rec.peaks;
       const mid = h / 2;
-      x.fillStyle = getComputedStyle(document.body).getPropertyValue('--blue').trim() || '#7bbbe3';
+      x.fillStyle = getComputedStyle(document.body).getPropertyValue('--green').trim() || '#6aa878';
       for (let px = 0; px < w; px++) {
         const t = (c.offset || 0) + (px / w) * c.dur;
         if (t > total) break;

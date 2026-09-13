@@ -275,6 +275,50 @@ ipcMain.handle('project:openDir', (_e, dirPath) => store.openDir(dirPath));
 ipcMain.handle('project:save', (_e, json) => store.saveProject(json));
 ipcMain.handle('project:current', () => store.current());
 ipcMain.handle('project:writeShotImage', (_e, shotId, dataUrl) => store.writeShotImage(shotId, dataUrl));
+
+/* 渲染端存储后端（Electron 桌面模式）：浏览器侧用 FSA 句柄，桌面侧走这几条 IPC。
+   相对路径一律经 safeMappedFile 白名单映射，越界拒绝。 */
+ipcMain.handle('project:writeFile', (_e, rel, bytes) => {
+  const cur = store.current();
+  if (!cur.root) throw new Error('未打开工程');
+  const abs = safeMappedFile(cur.root, String(rel || ''));
+  if (!abs) throw new Error('路径越界');
+  const f = require('node:fs');
+  f.mkdirSync(path.dirname(abs), { recursive: true });
+  f.writeFileSync(abs, Buffer.from(bytes));
+  return rel;
+});
+ipcMain.handle('project:deleteFile', (_e, rel) => {
+  const cur = store.current();
+  if (!cur.root) return false;
+  const abs = safeMappedFile(cur.root, String(rel || ''));
+  if (!abs) return false;
+  try { require('node:fs').rmSync(abs, { force: true }); return true; } catch (_) { return false; }
+});
+ipcMain.handle('project:listMedia', () => {
+  const cur = store.current();
+  if (!cur.root) return [];
+  const AUDIO = ['mp3', 'wav', 'm4a', 'ogg', 'flac', 'aac'];
+  const IMAGE = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif'];
+  const out = [];
+  (function walk(dir, prefix, depth) {
+    if (depth > 3) return;
+    let ents = [];
+    try { ents = require('node:fs').readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+    for (const it of ents) {
+      if (it.name.startsWith('.')) continue;
+      if (it.isDirectory()) {
+        if (it.name === 'boards' || it.name === 'shots' || it.name === 'node_modules') continue;
+        walk(path.join(dir, it.name), prefix + it.name + '/', depth + 1);
+      } else {
+        const ext = (it.name.split('.').pop() || '').toLowerCase();
+        const kind = AUDIO.includes(ext) ? 'audio' : (IMAGE.includes(ext) ? 'image' : 'other');
+        if (kind !== 'other') out.push({ path: prefix + it.name, name: it.name, kind });
+      }
+    }
+  })(cur.root, '', 0);
+  return out;
+});
 ipcMain.handle('assets:importDialog', async () => {
   const r = await dialog.showOpenDialog({
     properties: ['openFile', 'multiSelections'],

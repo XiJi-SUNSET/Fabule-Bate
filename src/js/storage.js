@@ -9,15 +9,39 @@
   const MTG = window.MTG;
   const U = MTG.util;
 
+  /* 桌面桥（Electron）：有 window.fabula 时不走 FSA —— 打开工程用主进程的
+     系统目录对话框（project.openDialog），文件读写走 IPC 后端。
+     FSA 的 showDirectoryPicker 在选择器还挂着时重复调用会抛
+     "File picker already active"，所以两条路径都加并发保护。 */
+  const FN = () => (window.fabula && window.fabula.project) || null;
+  let picking = false;
+
   const S = (MTG.storage = {
-    mode: 'none',        // 'fsa' | 'none'
-    root: null,          // FileSystemDirectoryHandle
+    mode: 'none',        // 'fsa'（浏览器）| 'electron'（桌面）| 'none'
+    root: null,          // FileSystemDirectoryHandle（仅 fsa 模式）
     dirName: '',
 
-    get ready() { return S.mode === 'fsa'; },
+    get ready() { return S.mode === 'fsa' || S.mode === 'electron'; },
 
     /* 打开（或新建）工程文件夹。用户取消返回 null */
     async openFolder() {
+      if (picking) return null;                 // 选择器已在弹出/未收尾：忽略重复点击
+      picking = true;
+      try { return await (FN() ? S._openDesktop() : S._openBrowser()); }
+      finally { picking = false; }
+    },
+
+    /* 桌面：主进程弹目录对话框（已有 fabula.json 直开，否则询问后创建） */
+    async _openDesktop() {
+      const snap = await FN().openDialog();
+      if (!snap || !snap.root) return null;
+      S.mode = 'electron';
+      S.dirName = snap.root.split(/[\\/]/).filter(Boolean).pop() || '';
+      return 'electron';
+    },
+
+    /* 浏览器：File System Access API */
+    async _openBrowser() {
       if (!('showDirectoryPicker' in window)) {
         MTG.toast('当前浏览器不支持文件夹访问，请用 Chrome / Edge', true);
         return null;
@@ -45,11 +69,23 @@
       const fh = await getFileHandle(path, false);
       return fh ? fh.getFile() : null;
     },
-    /* 安全读：不存在/无权限时返回 null 而不是抛错（素材类读取的统一入口） */
+    /* 安全读：不存在/无权限时返回 null 而不是抛错（素材类读取的统一入口）。
+       桌面模式经 fabula://proj 协议直读（主进程已映射到工程根并放行 CORS）。 */
     async readBlob(path) {
+      if (S.mode === 'electron') {
+        try {
+          const res = await fetch('fabula://proj/' + path);
+          return res.ok ? await res.blob() : null;
+        } catch (_) { return null; }
+      }
       return S.readFile(path).catch(() => null);
     },
     async writeFile(path, blob) {
+      if (S.mode === 'electron') {
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        await FN().writeFile(path, bytes);
+        return path;
+      }
       const fh = await getFileHandle(path, true);
       const w = await fh.createWritable();
       await w.write(blob);
@@ -57,6 +93,7 @@
       return path;
     },
     async deleteFile(path) {
+      if (S.mode === 'electron') return !!(await FN().deleteFile(path).catch(() => false));
       const parts = path.split('/').filter(Boolean);
       const name = parts.pop();
       try {
@@ -69,6 +106,7 @@
 
     /* 列出工程内可用媒体（排除 boards/ 与隐藏目录） */
     async listMedia() {
+      if (S.mode === 'electron') return await FN().listMedia().catch(() => []);
       const out = [];
       await walk(S.root, '', 0, out);
       return out.filter(f => f.kind !== 'other');
@@ -112,7 +150,9 @@
 
     /* 平台能力描述，用于顶栏标签 */
     describe() {
-      if (S.mode === 'fsa') return { tag: '文件夹 · ' + S.dirName, name: S.dirName, bin: 'disk' };
+      if (S.mode === 'fsa' || S.mode === 'electron') {
+        return { tag: '文件夹 · ' + S.dirName, name: S.dirName, bin: 'disk' };
+      }
       return { tag: '未打开工程', name: '', bin: 'none' };
     }
   });

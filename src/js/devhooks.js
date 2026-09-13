@@ -261,6 +261,36 @@
       return JSON.stringify(out);
     },
 
+    /* 桌面存储后端自检：create → electron 模式 → 写/读/列/删 全链路 */
+    async storage(dirUrl) {
+      const out = { steps: [] };
+      try {
+        if (!window.fabula) throw new Error('非 Electron 环境');
+        if (!dirUrl) throw new Error('缺少目录');
+        const snap = await window.fabula.project.create(dirUrl, '存储自检');
+        out.root = snap.root;
+        MTG.storage.mode = 'electron';
+        MTG.storage.dirName = snap.root.split(/[\\/]/).filter(Boolean).pop() || '';
+        out.ready = MTG.storage.ready;
+        out.steps.push('create');
+        await MTG.storage.writeFile('assets/image/st.png', new Blob(['store-ok'], { type: 'image/png' }));
+        out.steps.push('writeFile');
+        const blob = await MTG.storage.readBlob('assets/image/st.png');
+        out.read = blob ? await blob.text() : null;
+        out.steps.push('readBlob');
+        const list = await MTG.storage.listMedia();
+        out.listed = list.map((f) => f.path + ':' + f.kind);
+        out.steps.push('listMedia');
+        out.deleted = await MTG.storage.deleteFile('assets/image/st.png');
+        out.steps.push('deleteFile');
+        const again = await MTG.storage.readBlob('assets/image/st.png');
+        out.goneAfterDelete = again === null;
+      } catch (e) {
+        out.error = (e && e.message) || String(e);
+      }
+      return JSON.stringify(out);
+    },
+
     /* 状态快照：引擎 / 画板 / 工程 / 错误层 四面 */
     async status() {
       const out = { engine: null, board: null, project: null, err: '' };
