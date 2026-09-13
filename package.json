@@ -1,0 +1,16 @@
+{
+  "name": "fabula",
+  "productName": "Fabula",
+  "version": "0.1.0",
+  "description": "Fabula · 分镜创作工作台（绘画内核 + 镜头编排 + Agent 协作）",
+  "main": "main/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/project.test.mjs test/shots-geometry.test.mjs test/mcp-server.test.mjs test/prefs.test.mjs test/actions.test.mjs",
+    "mcp": "node agent/mcp-server.mjs"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11"
+  }
+}

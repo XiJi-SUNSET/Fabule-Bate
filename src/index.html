@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Montage · 分镜台</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><i class="brand-mark"></i><span>Montage</span></div>
+
+  <!-- 工作台切换（数据同一份，只是渲染形态不同） -->
+  <div class="view-seg" id="view-switch" role="group" aria-label="切换工作台视图">
+    <button type="button" class="view-tab active" data-view="timeline" title="剪辑软件式：素材库 + 画板 + 时间轴">时间轴</button>
+    <button type="button" class="view-tab" data-view="sheet" title="一行一个镜头：填景别/运镜/对白等，先排镜头表再逐个补画面">分镜表</button>
+    <button type="button" class="view-tab" data-view="story" title="连环画式铺开所有镜头：检视叙事节奏与画面连贯性，可放映">故事板</button>
+  </div>
+
+  <div class="tb-group proj">
+      <button id="btn-open" class="btn btn-primary">打开工程文件夹</button>
+      <span id="proj-name" class="proj-name">未打开工程</span>
+      <span id="proj-mode" class="tag" title="工程存储模式">—</span>
+    </div>
+
+    <div class="tb-group transport">
+      <button id="btn-goto-start" class="btn icon" title="回到开头">⏮</button>
+      <button id="btn-play" class="btn icon play" title="播放 / 暂停（空格）">▶</button>
+      <button id="btn-stop" class="btn icon" title="停止">■</button>
+      <span id="timecode" class="tc">00:00.00</span>
+      <div class="zoom-ctl">
+        <button id="btn-zoom-out" class="btn icon ghost" title="缩小时间轴">−</button>
+        <input id="zoom" type="range" min="8" max="400" value="60" title="时间轴缩放">
+        <button id="btn-zoom-in" class="btn icon ghost" title="放大时间轴">＋</button>
+      </div>
+      <label class="chk" title="拖动时吸附到播放头 / 相邻块边缘"><input id="snap" type="checkbox" checked><span>吸附</span></label>
+    </div>
+
+    <div class="tb-spacer"></div>
+
+    <div class="tb-group">
+      <button id="btn-save" class="btn" title="保存工程（Ctrl+S）">保存</button>
+      <button id="btn-export" class="btn ghost" title="导出工程 JSON / 图片序列">导出</button>
+      <button id="btn-theme" class="btn icon ghost" title="切换明暗">◐</button>
+      <button id="btn-settings" class="btn icon ghost" title="设置：快捷键 / 个性化 / 轮盘菜单">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ══════════ 视图 · 时间轴（默认） ══════════ -->
+  <section id="view-timeline" class="view-root">
+
+  <!-- ══════════ 上部工作区 ══════════ -->
+  <main class="workspace">
+
+    <!-- 左：素材库 -->
+    <section class="panel assets" id="panel-assets">
+      <div class="panel-head">
+        <span class="ph-title">素材库</span>
+        <div class="ph-actions">
+          <button id="btn-import-media" class="btn tiny" title="导入图片 / 音频到工程文件夹">导入</button>
+          <button id="btn-rescan" class="btn tiny ghost" title="重新扫描工程文件夹">扫描</button>
+          <button id="btn-add-group" class="btn tiny ghost" title="新建素材分组">＋ 分组</button>
+        </div>
+      </div>
+      <div class="asset-filter">
+        <button class="seg active" data-kind="all">全部</button>
+        <button class="seg" data-kind="board">分镜帧</button>
+        <button class="seg" data-kind="image">图片</button>
+        <button class="seg" data-kind="audio">音频</button>
+      </div>
+      <div id="asset-list" class="asset-list"></div>
+      <div class="panel-foot">
+        <span id="asset-hint" class="hint">拖素材到下方时间轴 · 双击图片作参考</span>
+      </div>
+    </section>
+
+    <div class="splitter v" id="split-v" title="拖动调整宽度"></div>
+
+    <!-- 右：画板 -->
+    <section class="panel board" id="panel-board">
+      <div class="panel-head">
+        <span class="ph-title">画板</span>
+        <div class="board-tools">
+          <select id="board-size" class="size-select" title="画布画幅">
+            <option value="1280x720">16:9 · 1280×720</option>
+            <option value="1920x1080">16:9 · 1920×1080</option>
+            <option value="720x1280">9:16 · 720×1280 竖屏</option>
+            <option value="1080x1920">9:16 · 1080×1920 竖屏</option>
+            <option value="1440x1080">4:3 · 1440×1080</option>
+            <option value="1080x1080">1:1 · 1080×1080</option>
+            <option value="custom">自定义…</option>
+          </select>
+          <span id="size-custom" class="size-custom hidden">
+            <input id="size-w" type="number" min="64" max="4096" step="2" value="1280" title="宽">
+            <span>×</span>
+            <input id="size-h" type="number" min="64" max="4096" step="2" value="720" title="高">
+            <button id="size-apply" class="btn tiny">应用</button>
+          </span>
+
+          <button class="tool active" data-tool="brush" title="画笔 (B)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/></svg>
+            </button>
+          <button class="tool" data-tool="eraser" title="橡皮 (E)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>
+            </button>
+          <button class="tool" data-tool="line" title="直线 (L)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19L19 5"/><circle cx="5" cy="19" r="1.7" fill="currentColor" stroke="none"/><circle cx="19" cy="5" r="1.7" fill="currentColor" stroke="none"/></svg>
+            </button>
+          <button class="tool" data-tool="rect" title="矩形 (R)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="6" width="16" height="12" rx="1.5"/></svg>
+            </button>
+          <button class="tool" data-tool="eyedrop" title="吸管 (I)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15.6 3.4l5 5-2 2-5-5z"/><path d="M13.6 8.4l3 3"/><path d="M14 8.5l-8 8-2 4.5 4.5-2 8-8z"/><path d="M4 17l3 3"/></svg>
+            </button>
+          <button class="tool" data-tool="hand" title="抓手：移动画布 (H)，或按住空格">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/>
+              <path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/>
+              <path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/>
+              <path d="m7 15l-1.76-1.76a2 2 0 0 0-2.83 2.82l3.6 3.6C7.5 21.6 9.2 22 12 22h2a8 8 0 0 0 8-8V7a2 2 0 0 0-2-2a2 2 0 0 0-2 2v4"/>
+            </svg>
+          </button>
+          <button class="tool" data-tool="zoom" title="缩放工具 (Z)：按住一点拖动——右移放大 / 左移缩小 · 点按放大 · Alt+点按缩小">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+              <path d="M11 8v6"/><path d="M8 11h6"/>
+            </svg>
+          </button>
+          <button class="tool" data-tool="lasso" title="套索 (Q)：圈出选区 → 可移动内容 / 填充 / 删除，绘制只影响选区内">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.7 14.47a10 8 0 1 1 3.12 2.37"/><path d="M7 22a5 5 0 0 1-2-3.99"/></svg>
+          </button>
+          <span class="divider"></span>
+          <button class="tool" id="btn-undo" title="撤销 (Ctrl+Z)">↶</button>
+          <button class="tool" id="btn-redo" title="重做 (Ctrl+Shift+Z)">↷</button>
+          <span class="divider"></span>
+          <span class="layer-switch">
+            <button class="layer active" data-layer="fg">线稿层</button>
+            <button class="layer" data-layer="bg">背景层</button>
+          </span>
+          <span class="divider"></span>
+          <button class="btn tiny" id="btn-new-board" title="新建一帧分镜">新建帧</button>
+          <button class="btn tiny" id="btn-save-board" title="把画板内容写回当前分镜帧">存帧</button>
+          <button class="btn tiny ghost" id="btn-clear-board" title="清空当前层">清层</button>
+          <button class="btn tiny" id="btn-onion" title="洋葱皮：显示前后帧重影">洋葱皮</button>
+        </div>
+      </div>
+
+      <div class="board-body">
+        <div class="board-stage" id="board-stage">
+          <div id="board-view"><canvas id="board-canvas" width="1280" height="720"></canvas></div>
+          <div id="brush-ring"><span id="brush-ring-num"></span></div>
+          <div id="board-empty" class="board-empty">播放头没有落在任何分镜帧上</div>
+          <div class="stage-zoom">
+            <button id="z-out" title="缩小">−</button>
+            <span id="z-label">100%</span>
+            <button id="z-in" title="放大">＋</button>
+            <i class="divider"></i>
+            <button id="z-fit" title="适应窗口 (Ctrl+0)">适应</button>
+            <button id="z-100" title="实际像素 (Ctrl+1)">1:1</button>
+          </div>
+        </div>
+
+        <div class="splitter v" id="split-side" title="拖动调整工具列宽度"></div>
+
+        <aside class="board-side" id="side-tools">
+          <div class="side-block">
+            <div class="side-title">拾色器</div>
+            <div class="picker-wrap">
+              <canvas id="picker" width="190" height="190"></canvas>
+            </div>
+            <div class="picker-row">
+              <span class="swatch-big" id="swatch"></span>
+              <div class="picker-fields">
+                <div class="pf"><label>色相</label><input id="f-h" type="number" min="0" max="360" value="14"></div>
+                <div class="pf"><label>饱和</label><input id="f-s" type="number" min="0" max="100" value="70"></div>
+                <div class="pf"><label>明度</label><input id="f-v" type="number" min="0" max="100" value="68"></div>
+                <div class="pf"><label>HEX</label><input id="f-hex" type="text" value="#eb684b"></div>
+              </div>
+            </div>
+            <div class="swatches" id="swatches"></div>
+          </div>
+
+          <div class="side-block">
+            <div class="side-title">笔刷</div>
+            <div id="brush-list" class="brush-list"></div>
+            <div id="brush-params"></div>
+            <div class="slider-row"><label>大小</label><input id="b-size" type="range" min="1" max="200" value="14"><span id="b-size-v">14</span></div>
+            <div class="slider-row"><label>不透明</label><input id="b-opacity" type="range" min="5" max="100" value="100"><span id="b-opacity-v">100</span></div>
+            <div class="slider-row"><label>压感</label><input id="b-pressure" type="range" min="0" max="100" value="85"><span id="b-pressure-v">85</span></div>
+            <label class="chk sm"><input id="b-pt" type="checkbox" checked><span>启用数位板压感</span></label>
+          </div>
+
+          <div class="side-block hidden" id="sel-block">
+            <div class="side-title">选区</div>
+            <div class="sel-btns">
+              <button class="btn tiny" id="sel-fill" title="用当前颜色填满选区">填充</button>
+              <button class="btn tiny ghost" id="sel-del" title="删除选区内的画面内容">删除内容</button>
+              <button class="btn tiny ghost" id="sel-commit" title="把选区内容落回画面（Enter）">落回画面</button>
+              <button class="btn tiny ghost" id="sel-cancel" title="取消选区（Esc）">取消选区</button>
+            </div>
+            <div class="hint">套索圈好后：在选区内拖动 = 移动内容 · 之后所有绘制只影响选区内</div>
+          </div>
+          <div class="side-block">
+            <div class="side-title">洋葱皮</div>
+            <label class="chk sm"><input id="onion-on" type="checkbox"><span>显示前后帧重影</span></label>
+            <div class="slider-row"><label>前</label><input id="onion-before" type="range" min="0" max="5" value="1"><span id="onion-before-v">1</span></div>
+            <div class="slider-row"><label>后</label><input id="onion-after" type="range" min="0" max="5" value="1"><span id="onion-after-v">1</span></div>
+            <div class="slider-row"><label>不透明</label><input id="onion-opacity" type="range" min="5" max="80" value="35"><span id="onion-opacity-v">35</span></div>
+            <div class="hint">前帧红 · 后帧蓝，不写入帧文件</div>
+          </div>
+
+          <div class="side-block">
+            <div class="side-title">参考层</div>
+            <label class="chk sm"><input id="ref-show" type="checkbox" checked><span>显示（不写入帧）</span></label>
+            <button class="btn tiny ghost" id="ref-clear">清除参考层</button>
+          </div>
+        </aside>
+
+        <div class="splitter v" id="split-shot" title="拖动调整镜头信息列宽度"></div>
+
+        <!-- 镜头信息：独立成列，与工具列并排放在右侧 -->
+        <aside class="board-side side-shot">
+          <div class="side-block grow">
+            <div class="side-title">镜头信息</div>
+            <div id="shot-panel"></div>
+            <div id="shot-panel-hint" class="hint"></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <div class="splitter h" id="split-h" title="拖动调整时间轴高度"></div>
+
+  <!-- ══════════ 底部时间轴 ══════════ -->
+  <footer class="timeline">
+    <div class="tl-toolbar">
+      <span class="ph-title">时间轴</span>
+      <button id="btn-add-audio-track" class="btn tiny">+ 音频轨</button>
+      <button id="btn-add-board-track" class="btn tiny">+ 分镜轨</button>
+      <button id="btn-fix-overlap" class="btn tiny ghost hidden" title="同轨片段不能重叠：把重叠的片段按顺序往右顺推">整理重叠</button>
+      <span class="divider"></span>
+      <span class="hint">拖动块移动 · 拖边缘裁剪 · 滚轮横向滚动 · Ctrl+滚轮缩放</span>
+      <div class="tb-spacer"></div>
+      <span id="tl-info" class="hint"></span>
+    </div>
+
+    <div class="tl-body">
+      <div class="tl-heads">
+        <div class="tl-head-spacer" id="tl-head-spacer"></div>
+        <div class="tl-head-list" id="tl-heads"></div>
+      </div>
+      <div class="tl-scroll" id="tl-scroll">
+        <div class="tl-content" id="tl-content">
+          <canvas id="ruler" height="30"></canvas>
+          <div class="tl-tracks" id="tl-tracks"></div>
+          <div class="playhead" id="playhead"><i></i></div>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  </section>
+
+  <!-- ══════════ 视图 · 分镜表（飓风式镜头行） ══════════ -->
+  <section id="view-sheet" class="view-root hidden">
+    <div class="sheet-toolbar">
+      <span class="ph-title">分镜表</span>
+      <button id="sh-new" class="btn tiny">＋ 新建镜头</button>
+      <button id="sh-copy" class="btn tiny">复制</button>
+      <button id="sh-del" class="btn tiny ghost">删除</button>
+      <span class="divider"></span>
+      <button id="sh-up" class="btn tiny ghost" title="把选中镜头在序列里上移一格">上移</button>
+      <button id="sh-down" class="btn tiny ghost" title="下移一格">下移</button>
+      <span class="divider"></span>
+      <span class="hint">点击「画面」列绘制或编辑该镜头 · 双击行 = 跳到时间轴该帧 · 字段改动即时同步到时间轴</span>
+      <div class="tb-spacer"></div>
+      <span id="sheet-info" class="hint"></span>
+    </div>
+    <div class="sheet-scroll">
+      <table class="shot-table" id="shot-table">
+        <thead id="shot-head"></thead>
+        <tbody id="shot-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════ 视图 · 故事板（连环画式总览 + 放映） ══════════ -->
+  <section id="view-story" class="view-root hidden">
+    <div class="sheet-toolbar">
+      <span class="ph-title">故事板</span>
+      <button id="st-slide" class="btn tiny">▶ 放映</button>
+      <span class="divider"></span>
+      <span class="hint">格子</span>
+      <button class="btn tiny" data-size="sm">小</button>
+      <button class="btn tiny active" data-size="md">中</button>
+      <button class="btn tiny" data-size="lg">大</button>
+      <span class="divider"></span>
+      <label class="chk sm"><input id="st-text" type="checkbox" checked><span>显示文字</span></label>
+      <span class="divider"></span>
+      <span class="hint">点画面 = 绘制该镜头 · 双击卡片 = 跳到时间轴</span>
+      <div class="tb-spacer"></div>
+      <span id="story-info" class="hint"></span>
+    </div>
+    <div class="story-scroll">
+      <div id="story-grid" class="story-grid md"></div>
+    </div>
+  </section>
+
+  <!-- 放映：按镜头真实时长自动翻页；空格暂停/继续，←→ 切镜，Esc 退出 -->
+  <div id="story-slide" class="story-slide hidden">
+    <img id="sl-img" alt="">
+    <div class="sl-bar">
+      <span id="sl-no" class="sl-no"></span>
+      <span id="sl-meta" class="sl-meta"></span>
+      <div class="tb-spacer"></div>
+      <button id="sl-prev" class="btn icon ghost" title="上一镜（←）">←</button>
+      <button id="sl-play" class="btn icon ghost" title="暂停 / 继续（空格）">❙❙</button>
+      <button id="sl-next" class="btn icon ghost" title="下一镜（→）">→</button>
+      <button id="sl-close" class="btn ghost" title="退出放映（Esc）">退出</button>
+    </div>
+  </div>
+
+  <!-- ══════════ 绘画弹窗（打开时把时间轴视图里的画板整体移入，复用同一实例） ══════════ -->
+  <div id="paint-modal" class="paint-modal hidden">
+    <div class="paint-modal-head">
+      <span id="pm-title" class="ph-title">绘画</span>
+      <span id="pm-sub" class="hint"></span>
+      <div class="tb-spacer"></div>
+      <button id="pm-save" class="btn" title="把画板内容存进该镜头帧并关闭">存帧并关闭</button>
+      <button id="pm-cancel" class="btn ghost" title="放弃本次修改直接关闭">取消</button>
+    </div>
+    <div id="pm-body" class="paint-modal-body"></div>
+  </div>
+
+<div id="toast" class="toast"></div>
+
+<input type="file" id="file-media" multiple accept="image/*,audio/*" hidden>
+
+<script src="js/core.js"></script>
+<script src="js/vendor/perfect-freehand.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/transport.js"></script>
+<script src="js/picker.js"></script>
+<script src="js/gpu.js"></script>
+<script src="js/brushes.js"></script>
+<script src="js/settings.js"></script>
+<script src="js/radial.js"></script>
+<script src="js/board.js"></script>
+<script src="js/assets.js"></script>
+<script src="js/timeline.js"></script>
+<script src="js/sheet.js"></script>
+<script src="js/story.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
