@@ -456,6 +456,179 @@
       return JSON.stringify(out);
     },
 
+    /* 压力管线探针（压感回归自检；对照 paint.js 的 shapePressure / 起笔门槛注释）：
+       ① 落笔首帧压力缺失（驱动全 0）→ 不得塌陷（首帧经中性起步 + 斜坡后仍 > 0.25）；
+       ② 真实极轻接触（raw 0.015 < 死区）→ 必须立即落笔（修复前被门槛吞掉）；
+       ③ 正常压感 → 忠实映射（0.7 明显大于 0.2）。
+       仅测试/冒烟用：会向当前画布画三笔。 */
+    async penProbe() {
+      const out = {};
+      const ov = $('ov');
+      const r = ov.getBoundingClientRect();
+      const pev = (type, x, y, pressure) => ov.dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, composed: true,
+        pointerId: 9, pointerType: 'pen', isPrimary: true,
+        button: 0, buttons: type === 'pointerup' ? 0 : 1,
+        pressure, clientX: x, clientY: y,
+      }));
+      const stroke = (x0, y0, press, n) => {
+        pev('pointerdown', x0, y0, press);
+        for (let i = 1; i <= n; i++) pev('pointermove', x0 + i * 4, y0, press);
+        pev('pointerup', x0 + n * 4, y0, press);
+      };
+      const E = window.__fabulaEngine;
+      const lab = window.__paintlab;
+      try {
+        MTG.board.setIdle(false);
+        E.setTool('pen');
+        /* ① 起笔首帧忠实映射（对齐旧版）：零读数起笔不得有"中性垫托"圆点
+              （垫托会让首个 dab 比后续极轻段粗）；真实压力到达后应平滑追上。 */
+        MTG.board.clearLayer('fg');
+        const x = r.left + r.width * 0.25, y = r.top + r.height * 0.3;
+        pev('pointerdown', x, y, 0);
+        pev('pointermove', x + 8, y, 0);          // 位移 8 < 12：仍在门槛等待
+        pev('pointermove', x + 18, y, 0);         // 位移 18：自愈放行，本帧即笔画首帧
+        out.firstFrameMissingP = +E.PEN.lastShapeP.toFixed(3);
+        out.firstFrameOK = E.PEN.lastShapeP <= 0.02;        // 忠实：无读数即 0（无圆点垫托）
+        for (let i = 1; i <= 6; i++) pev('pointermove', x + 18 + i * 4, y, 0.5);   // 真实压力到达
+        out.recoverP = +E.PEN.lastShapeP.toFixed(3);
+        out.recoverOK = E.PEN.lastShapeP > 0.4;             // 平滑链快速追上真实压力
+        pev('pointerup', x + 46, y, 0.5);
+        /* ① 的恒 0 输入会让引擎按设计判"无压感"（自愈）——后续压感断言前重置判定，
+           否则 ②③ 全走速度驱动，测不到压力映射 */
+        E.PEN.pressureSeen = null;
+        /* ② 极轻接触（0.015）：必须落笔进撤销栈 */
+        const u0 = lab.stats.undo;
+        stroke(r.left + r.width * 0.4, r.top + r.height * 0.5, 0.015, 3);
+        out.lightStrokeOK = lab.stats.undo > u0;            // 修复前 false（被门槛吞）
+        /* ③ 压感忠实映射（采样 8 点：起笔斜坡 4 帧放完后读末值） */
+        stroke(r.left + r.width * 0.55, r.top + r.height * 0.5, 0.2, 8);
+        out.mapLow = +E.PEN.lastShapeP.toFixed(3);
+        stroke(r.left + r.width * 0.7, r.top + r.height * 0.5, 0.7, 8);
+        out.mapHigh = +E.PEN.lastShapeP.toFixed(3);
+        out.faithfulOK = out.mapHigh > out.mapLow + 0.15;
+        /* ④ 极轻零压起笔一笔（>12 点）：不得被判"无压感"
+              （修复前：pending 自愈当笔置 false → 这一笔直接变鼠标模式） */
+        E.PEN.pressureSeen = null;
+        E.PEN.zeroStrokes = 0;
+        stroke(r.left + r.width * 0.85, r.top + r.height * 0.3, 0, 18);
+        out.zeroStrokeSeen = E.PEN.pressureSeen;
+        out.zeroStrokeOK = E.PEN.pressureSeen !== false;
+        /* ⑤ 极轻起笔（0）→ 中段用力（0.6）：后段必须跟随真实压力，不是速度驱动 */
+        E.PEN.pressureSeen = null;
+        const x5 = r.left + r.width * 0.35, y5 = r.top + r.height * 0.72;
+        pev('pointerdown', x5, y5, 0);
+        for (let i = 1; i <= 6; i++) pev('pointermove', x5 + i * 4, y5, 0);        // 极轻段（触发自愈放行）
+        for (let i = 7; i <= 12; i++) pev('pointermove', x5 + i * 4, y5, 0.6);     // 中段用力
+        out.midStrokeP = +E.PEN.lastShapeP.toFixed(3);
+        out.midStrokeOK = E.PEN.lastShapeP > 0.4;                                   // 修复前 ≈0.24（鼠标模式）
+        pev('pointerup', x5 + 52, y5, 0.6);
+        out.pressureSeen = E.PEN.pressureSeen;
+      } catch (e) {
+        out.error = (e && e.message) || String(e);
+      } finally {
+        try { MTG.board.setIdle(true); } catch (_) {}
+      }
+      return JSON.stringify(out);
+    },
+
+    /* 时间轴同轨拖拽换位探针：合成指针事件把第 1 个片段拖过第 2 个的中点，
+       看片段顺序是否真的重排（验证"时间轴能不能拖拽排序"的现场事实）。 */
+    tlDragProbe() {
+      const out = {};
+      try {
+        let p = MTG.state.project;
+        if (!p) {
+          p = MTG.state.project = {
+            name: 'tl-probe', boardW: 1280, boardH: 720, fps: 12,
+            tracks: [], clips: [], assets: [], boards: [], tagOptions: {}
+          };
+        }
+        /* 确保存在一条含 ≥2 片段的轨道（冒烟环境工程常为空） */
+        const seeded = p.tracks.some(tr => p.clips.filter(c => c.trackId === tr.id).length >= 2);
+        if (!seeded) {
+          if (!p.tracks.length) p.tracks.push({ id: 'tr-v', kind: 'board', name: '画面' });
+          const tid = p.tracks[0].id;
+          p.clips.push(
+            { id: 'cl-a', trackId: tid, kind: 'board', boardId: null, name: 'A', start: 0, dur: 2, offset: 0, meta: {} },
+            { id: 'cl-b', trackId: tid, kind: 'board', boardId: null, name: 'B', start: 2, dur: 2, offset: 0, meta: {} },
+            { id: 'cl-c', trackId: tid, kind: 'board', boardId: null, name: 'C', start: 4, dur: 2, offset: 0, meta: {} }
+          );
+          MTG.state.selectedClipIds = new Set();
+          MTG.timeline.render();
+        }
+        let trackId = null, list = null;
+        for (const tr of p.tracks) {
+          const l = p.clips.filter(c => c.trackId === tr.id).sort((a, b) => a.start - b.start);
+          if (l.length >= 2) { trackId = tr.id; list = l; break; }
+        }
+        if (!list) { out.error = '没有含 ≥2 个片段的轨道'; return JSON.stringify(out); }
+
+        const c1 = list[0], c2 = list[1];
+        out.before = list.map(c => c.id).join(',');
+        const el = MTG.timeline.el.tracks.querySelector('.clip[data-id="' + c1.id + '"]');
+        if (!el) { out.error = 'clip 元素缺失'; return JSON.stringify(out); }
+
+        const r = el.getBoundingClientRect();
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        const fire = (type, x, y) => el.dispatchEvent(new PointerEvent(type, {
+          bubbles: true, cancelable: true, pointerId: 99, pointerType: 'mouse',
+          button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: x, clientY: y
+        }));
+        fire('pointerdown', cx, cy);
+        /* 拖到"越过 c2 中点"所需的像素：两中点距离 + 余量 */
+        const need = ((c2.start + c2.dur / 2) - (c1.start + c1.dur / 2)) * MTG.state.pxPerSec + 30;
+        for (let k = 1; k <= 6; k++) fire('pointermove', cx + need * k / 6, cy);
+        fire('pointerup', cx + need, cy);
+
+        const after = p.clips.filter(c => c.trackId === trackId).sort((a, b) => a.start - b.start).map(c => c.id).join(',');
+        out.after = after;
+        out.reordered = out.before !== out.after;
+        out.c1Start = +c1.start.toFixed(2);
+        out.pxPerSec = MTG.state.pxPerSec;
+      } catch (e) {
+        out.error = (e && e.message) || String(e);
+      }
+      return JSON.stringify(out);
+    },
+
+    /* 轮盘右键探针：radialRight 开启时，笔右键应呼出轮盘且不启动抓手（视图不动） */
+    radialProbe() {
+      const out = {};
+      try {
+        MTG.settings.set('radialRight', true);
+        /* 冒烟环境常无当前画板：造最小场景（轮盘呼出要求有画板） */
+        if (!MTG.state.currentBoardId) {
+          const p = MTG.state.project || (MTG.state.project = {
+            name: 'radial-probe', boardW: 1280, boardH: 720, fps: 12,
+            tracks: [], clips: [], assets: [], boards: [], tagOptions: {}
+          });
+          if (!Array.isArray(p.boards)) p.boards = [];
+          p.boards.push({ id: 'bd-radial', path: 'boards/radial-probe.png', w: 1280, h: 720 });
+          MTG.state.currentBoardId = 'bd-radial';
+        }
+        const ov = document.getElementById('ov');
+        const r = ov.getBoundingClientRect();
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        const v0 = window.__fabulaEngine.getView();
+        const fire = (type, x, y) => ov.dispatchEvent(new PointerEvent(type, {
+          bubbles: true, cancelable: true, pointerId: 7, pointerType: 'pen', isPrimary: true,
+          button: 2, buttons: type === 'pointerup' ? 0 : 2, clientX: x, clientY: y
+        }));
+        fire('pointerdown', cx, cy);
+        out.hasBoard = !!MTG.state.currentBoardId;
+        out.radialOpen = MTG.radial.open;
+        for (let k = 1; k <= 4; k++) fire('pointermove', cx + k * 12, cy);
+        fire('pointerup', cx + 48, cy);
+        const v1 = window.__fabulaEngine.getView();
+        out.viewMoved = Math.abs(v1.x - v0.x) + Math.abs(v1.y - v0.y) > 0.5;
+        out.radialOpenOK = out.radialOpen === true || !out.hasBoard;   // 无画板时轮盘本就不呼出
+        out.panOK = out.viewMoved === false;                           // 抓手不得连带启动
+      } catch (e) { out.error = (e && e.message) || String(e); }
+      try { MTG.settings.set('radialRight', false); } catch (_) {}
+      return JSON.stringify(out);
+    },
+
     /* 状态快照：引擎 / 画板 / 工程 / 错误层 四面 */
     async status() {
       const out = { engine: null, board: null, project: null, err: '' };

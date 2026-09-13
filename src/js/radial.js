@@ -56,6 +56,7 @@
           if (e.button !== 2 || !MTG.settings.get('radialRight')) return;
           if (!MTG.state.currentBoardId) return;
           e.preventDefault();
+          e.stopPropagation();     /* 阻断引擎（同为 #ov 上的 bubble 监听）：否则笔右键会同时启动抓手平移 */
           Rad.show();
         }, true);
       }
@@ -65,13 +66,15 @@
     build() {
       const st = MTG.settings;
       const ids = st.get('radial') || [];
-      Rad.items = ids.map(id => st.action(id)).filter(Boolean);
-      if (!Rad.items.length) return false;
+      /* 严格保留 8 个槽位（无效 id → null，不用 filter）：filter 会让后面的项前移，
+         扇区数量变少、方向与设置错位（"轮盘工具显示不全"的根因）。 */
+      Rad.items = Array.from({ length: N }, (_, i) => (ids[i] ? (st.action(ids[i]) || null) : null));
+      if (!Rad.items.some(Boolean)) return false;
 
       let s = '', ic = '';
       Rad.items.forEach((a, i) => {
-        s += '<path class="rs" data-i="' + i + '" d="' + sectorPath(i) + '"></path>';
-        ic += '<i class="ri" data-i="' + i + '">' + (a.icon || '') + '</i>';
+        s += '<path class="rs' + (a ? '' : ' off') + '" data-i="' + i + '" d="' + sectorPath(i) + '"></path>';
+        if (a) ic += '<i class="ri" data-i="' + i + '">' + (a.icon || '') + '</i>';
       });
       Rad.svg.innerHTML = s;
       Rad.icons.innerHTML = ic;

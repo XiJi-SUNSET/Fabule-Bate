@@ -1641,6 +1641,7 @@ const PEN = {
   maxDev: 0,
   minRaw: 1,         // 整笔见过的最小/最大原始压力（区分真压感与恒 0.5 伪设备）
   maxRaw: 0,
+  zeroStrokes: 0,    // 连续"全程零读数"的笔画数：连续多笔才判无压感（极轻接触不算证据）
   baseRaw: 0,
   smoothP: undefined,
   lastShapeP: 0.55,
@@ -1689,10 +1690,12 @@ function updateTilt(e) {
 /* 把原始压力整形成可用范围：死区 → 归一化 → 曲线 */
 function shapePressure(raw, type) {
   if (type === 'mouse') return 1;
-  /* raw = 0 是数位笔合法的"极轻接触"，不是数据缺失。
-     旧逻辑把它当缺失帧沿用 lastShapeP —— 轻笔会粘滞在起笔斜坡/上一笔
-     的压力上（整笔异常粗大），且死区边缘 raw 跳变时大小 dab 交替（珠子状）。
-     压感毛刺由平滑链负责抹平，这里只做忠实的死区映射。 */
+  /* raw = 0 是数位笔合法的"极轻接触"，不是数据缺失 —— 忠实映射为 0（极细）。
+     起笔首帧同样忠实（对齐旧版 Fabula 行为）：**不用中性值垫托** ——
+     垫托会在极轻起笔处留下一个孤立圆点（首个 dab 比后续极轻段明显粗），
+     视觉突兀（用户实测反馈）。塌陷/断线由"起笔门槛 + 平滑链"负责：
+     门槛挡无读数的落笔首帧，真实压力到达后平滑链自然追上，
+     不需要在映射函数里造假值。 */
   const lo = PEN.pMin, hi = Math.max(PEN.pMax, lo + 0.05);
   const x = clamp01((raw - lo) / (hi - lo));
   return Math.pow(x, Math.max(0.15, PEN.curve));
@@ -1893,7 +1896,14 @@ ovc.addEventListener('pointerdown', (e) => {
 
   /* --- 按键映射 --- */
   const rubber = isPen && (e.button === 5 || (e.buttons & 32) !== 0); /* 笔尾橡皮 */
-  if (e.button === 1 || spaceDown || tool === 'hand' || (isPen && e.button === 2)) { startPan(e); return; }
+  /* 笔的右键（侧键）默认是抓手指南；但"右键呼出轮盘"开启时归轮盘 ——
+     不能同时启动平移（radial.js 已在 capture 阶段 stopPropagation，这里是双保险） */
+  let radialOn = false;
+  try {
+    radialOn = !!(window.MTG && MTG.settings && MTG.settings.get('radialRight')
+      && MTG.state && MTG.state.currentBoardId);
+  } catch (_) {}
+  if (e.button === 1 || spaceDown || tool === 'hand' || (isPen && e.button === 2 && !radialOn)) { startPan(e); return; }
 
   const isDown = (e.button === 0) || rubber;
   if (!isDown) return;
@@ -1925,12 +1935,15 @@ ovc.addEventListener('pointerdown', (e) => {
 
   if (SHAPE_TOOLS[tool]) { shapeCur = { type: tool, a: d, b: d, shift: !!e.shiftKey }; return; }
 
-  /* 起笔压力门槛：pen 输入压力低于死区 = 笔还没真正压下，不落笔（PS 同款行为）。
+  /* 起笔压力门槛：只挡"完全没有读数"的落笔首帧（驱动尚未上报真实的缺失帧）。
+     真实的极轻接触（raw > 0，哪怕低于死区）**立即落笔** —— 它就该是一条
+     极细线（PS 同款），不该被门槛吞掉（此前 raw>0 也等，极小压力永远过不了
+     门槛 → 极轻起笔画不出/丢起笔段）。
      fill / lasso 是即时操作不走门槛；鼠标/触屏没有压力语义也不走；
      已判定无压感（速度驱动）的设备不吃门槛 —— 恒 0/0.5 读数也能正常画。 */
     if (isPen && PEN.mode !== 2 && PEN.pressureSeen !== false) {
       const raw0 = typeof e.pressure === 'number' ? e.pressure : 0;
-      if (raw0 < PEN.pMin) {
+      if (raw0 === 0) {
         penPending = true;
         penPendingRubber = rubber;
         penPendingMoved = 0;
@@ -2037,18 +2050,16 @@ ovc.addEventListener('pointermove', (e) => {
     return;
   }
   if (penPending) {
-    /* 起笔门槛等待中：压力越过死区才真正落笔，起点 = 越过门槛的位置（PS 同款）。
-       极轻悬停拖动因此全程不产生笔画、不留痕。 */
+    /* 等待真实压力上报中：一旦拿到任何 > 0 的读数立即落笔（起点 = 该位置）；
+       恒 0（驱动轻触报 0 / 无压感）拖出 12px 后放行 —— 否则一支笔画不出来。
+       **不在这里判"无压感"**：单笔零读数可能只是极轻接触，当笔降级会让
+       用户看到"这一笔突然变成鼠标模式"（压感失效投诉的根因之一）；
+       是否降级交给 endStroke 的整笔统计（需连续多笔证据）。 */
     const rawP = e.pointerType === 'pen' && typeof e.pressure === 'number' ? e.pressure : 0;
-    if (!(rawP >= PEN.pMin)) {
-      if (rawP > 0) return;   // 有读数但还没过门槛：继续等
-      /* 自愈：恒 0 压力的设备（部分驱动/数位屏）永远过不了门槛 ——
-         拖出 12px 仍没有任何非零读数，就判为无压感、降级速度驱动并立即落笔，
-         否则这支笔一支笔画都画不出来 */
+    if (rawP === 0) {
       penPendingMoved += Math.hypot(d.x - penPendingXY.x, d.y - penPendingXY.y);
       penPendingXY.x = d.x; penPendingXY.y = d.y;
       if (penPendingMoved < 12) return;
-      PEN.pressureSeen = false;
     }
     penPending = false;
     beginStroke(e, penPendingRubber, false);   // 随后继续走正常 move 采样
@@ -2072,17 +2083,23 @@ function endStroke(e) {
   drawing = false;
   inputQ.length = 0;
 
-  /* 压感存在性判定：只在笔画足够长时更新，避免一两笔草稿把判断带偏。
-     证据 = 读数偏离过规范默认值 0.5（无压感硬件的 pen 事件恒报 0.5）：
-     - 变化幅度大（正常压感笔画）
-     - 或出现过明显偏低的读数（极轻笔全程 0.02~0.08 —— 变化幅度小，
-       旧判定 maxDev>0.10 会把它误杀成"无压感"→整笔降级速度驱动→慢速=粗）
-     - 或出现过明显偏高的读数
-     恒 0.5（真·无压感设备）三个条件全不命中 → 正确降级 */
+  /* 压感存在性判定（保守优先：宁可暂时按"有压感"处理，也不要把真实压感设备
+     误判成鼠标模式 —— 用户对"压感突然失效"的感知远糟于"线细一点"）：
+     · 读到过任何可辨认读数或有明显变化 → 有压感（true，且清零零读数计数）
+     · 全程零读数 → 可能是极轻接触（驱动轻触报 0），也可能是无压感设备：
+       单笔/两笔不作数（否则极轻起笔会"当笔变鼠标模式"），连续 3 笔才降级
+     · 恒 0.5 且无变化 → 浏览器 Pointer Events 对"无压感"的规范默认值，强证据，降级 */
   if (PEN.lastType !== 'mouse' && strokeInfo.points > 12) {
-    PEN.pressureSeen = PEN.maxDev > 0.10
-      || (PEN.minRaw < 0.40 && PEN.maxRaw > 0)   // 出现过任何非零读数即压感证据（极轻笔可能全程 < 0.02）
-      || PEN.maxRaw > 0.60;
+    const noVariation = PEN.maxDev <= 0.02;
+    if (PEN.maxRaw === 0) {
+      PEN.zeroStrokes = (PEN.zeroStrokes || 0) + 1;
+      if (PEN.zeroStrokes >= 3) PEN.pressureSeen = false;   // 连续 3 笔零读数：真无压感
+    } else if (noVariation && Math.abs(PEN.maxRaw - 0.5) < 0.02) {
+      PEN.pressureSeen = false;                              // 恒 0.5 伪设备
+    } else {
+      PEN.pressureSeen = true;                               // 有读数 / 有变化：有压感
+      PEN.zeroStrokes = 0;
+    }
   }
 
   const d = strokeInfo.dirty;

@@ -522,6 +522,8 @@ textarea.sp-ctl { min-height: 34px; resize: vertical; line-height: 1.45; }
   border-radius: 4px; padding: 1px 5px; opacity: 0; transition: .12s; pointer-events: none;
 }
 .shot-pic.empty { border-style: dashed; }
+/* 有画面的单元格衬纸色：帧图多为"透明底 + 深色线"，深色模式下用 --stage 深底会看不清（用户反馈） */
+.shot-pic:not(.empty) { background: #f5f0ea; }
 /* 行内编辑控件 */
 .shot-in { width: 100%; min-width: 0; box-sizing: border-box; }
 .shot-table select.shot-in {
@@ -558,6 +560,8 @@ textarea.sp-ctl { min-height: 34px; resize: vertical; line-height: 1.45; }
 .sc-pic { aspect-ratio: 16 / 9; border-radius: 6px; background: var(--stage); display: grid; place-items: center; overflow: hidden; }
 .sc-pic img { max-width: 100%; max-height: 100%; display: block; }
 .sc-pic.empty { border: 1px dashed var(--border); color: var(--text-dim); font-size: 11px; }
+/* 故事板卡片同理：有画面时衬纸色，深色模式下也能看清透明底帧图 */
+.sc-pic:not(.empty) { background: #f5f0ea; }
 .sc-tags { display: flex; gap: 4px; flex-wrap: wrap; }
 .sc-tags i { font-style: normal; font-size: 9.5px; background: rgba(var(--red-rgb), .14); color: var(--red); border-radius: 4px; padding: 1px 5px; }
 .sc-txt { font-size: 10.5px; line-height: 1.5; max-height: 4.5em; overflow: hidden; }
@@ -787,6 +791,7 @@ textarea.sp-ctl { min-height: 34px; resize: vertical; line-height: 1.45; }
 .radial-svg { position: absolute; inset: 0; width: 240px; height: 240px; }
 .radial-svg .rs { fill: var(--card-strong); fill-opacity: .94; stroke: var(--border); stroke-width: 1; }
 .radial-svg .rs.on { fill: var(--red); fill-opacity: .96; stroke: var(--red); }
+.radial-svg .rs.off { fill-opacity: .3; stroke-dasharray: 4 4; }
 .radial-icons { position: absolute; inset: 0; }
 .radial-icons .ri {
   position: absolute; width: 22px; height: 22px;
@@ -914,7 +919,9 @@ input[data-tag] {
   gap: 14px; padding: 12px; overflow: auto;
 }
 .sd-pic {
-  aspect-ratio: 16 / 9; background: var(--stage); border: 1px solid var(--border);
+  /* 纸色衬底：深色模式下透明底帧图也能看清（与 .shot-pic/.sc-pic 同理）；
+     color 给空态"＋ 画"文字一个在浅底上可读的深灰 */
+  aspect-ratio: 16 / 9; background: #f5f0ea; color: #6b625a; border: 1px solid var(--border);
   border-radius: 10px; display: grid; place-items: center; overflow: hidden; cursor: pointer;
 }
 .sd-pic img { max-width: 100%; max-height: 100%; display: block; }
