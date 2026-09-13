@@ -256,27 +256,21 @@ input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border: 0; bo
                     linear-gradient(45deg, var(--track-alt) 25%, transparent 25%, transparent 75%, var(--track-alt) 75%);
   background-size: 16px 16px; background-position: 0 0, 8px 8px;
 }
-#board-view { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
-#board-canvas {
-  display: block;
-  background: #fff; border-radius: 4px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, .25);
-  touch-action: none; cursor: crosshair;
+/* 绘画引擎的画布（engine/paint.js）：gl = WebGL2 内容层，ov = 覆盖层兼事件层。
+   两片铺满舞台；像素尺寸（width/height 属性）由引擎按 devicePixelRatio 重建。 */
+#gl, #ov {
+  position: absolute; left: 0; top: 0; display: block;
+  width: 100%; height: 100%;
 }
-body[data-theme="dark"] #board-canvas { background: #f5f0ea; }
-#brush-ring {
-  position: absolute; left: 0; top: 0; width: 8px; height: 8px;
-  border: 1px solid rgba(0, 0, 0, .85); border-radius: 50%;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, .9);   /* 外圈白描边：明/暗底上都能看清 */
-  pointer-events: none; z-index: 6; display: none;
-  box-sizing: content-box;
-}
-#brush-ring-num {
-  position: absolute; left: 50%; top: calc(100% + 5px); transform: translateX(-50%);
-  font: 600 10px/1.5 ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
-  color: #fff; background: rgba(0, 0, 0, .72); border: 0;
-  border-radius: 4px; padding: 0 5px; white-space: nowrap;
-  pointer-events: none;
+#gl { z-index: 1; }
+#ov { z-index: 2; touch-action: none; cursor: none; }   /* 光标由引擎自绘（笔刷形状） */
+.board-stage.no-frame #ov { cursor: not-allowed; }
+/* 引擎的报错层：WebGL2 缺失 / 脚本异常时铺满画板显示原因 */
+#err {
+  position: absolute; inset: 0; z-index: 9; display: none;
+  place-items: center; padding: 24px; text-align: center;
+  background: rgba(12, 10, 9, .82); color: #fff;
+  font: 13px/1.7 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre-wrap;
 }
 .board-empty {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -666,7 +660,7 @@ textarea.sp-ctl { min-height: 34px; resize: vertical; line-height: 1.45; }
 #z-label { min-width: 40px; text-align: center; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .stage-zoom .divider { height: 14px; }
 .board-stage.panning { cursor: grabbing !important; }
-.board-stage.panning #board-canvas { cursor: grabbing !important; }
+.board-stage.panning #ov { cursor: grabbing !important; }
 
 /* ── 画幅选择 ── */
 .size-select {

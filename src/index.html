@@ -149,9 +149,12 @@
       </div>
 
       <div class="board-body">
-        <div class="board-stage" id="board-stage">
-          <div id="board-view"><canvas id="board-canvas" width="1280" height="720"></canvas></div>
-          <div id="brush-ring"><span id="brush-ring-num"></span></div>
+        <div class="board-stage" id="stage">
+          <!-- 绘画引擎（engine/paint.js）的舞台：
+               gl = WebGL2 画布（内容层） · ov = 覆盖层兼事件层（蚂蚁线/自绘光标） · err = 报错层 -->
+          <canvas id="gl"></canvas>
+          <canvas id="ov"></canvas>
+          <div id="err"></div>
           <div id="board-empty" class="board-empty">播放头没有落在任何分镜帧上</div>
           <div class="stage-zoom">
             <button id="z-out" title="缩小">−</button>
@@ -340,12 +343,11 @@
 
 <input type="file" id="file-media" multiple accept="image/*,audio/*" hidden>
 
+<script src="engine/paint.js"></script>
 <script src="js/core.js"></script>
-<script src="js/vendor/perfect-freehand.js"></script>
 <script src="js/storage.js"></script>
 <script src="js/transport.js"></script>
 <script src="js/picker.js"></script>
-<script src="js/gpu.js"></script>
 <script src="js/brushes.js"></script>
 <script src="js/settings.js"></script>
 <script src="js/radial.js"></script>
@@ -355,5 +357,6 @@
 <script src="js/sheet.js"></script>
 <script src="js/story.js"></script>
 <script src="js/app.js"></script>
+<script src="js/devhooks.js"></script>
 </body>
 </html>

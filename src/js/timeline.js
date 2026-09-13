@@ -537,6 +537,7 @@
     snapTime(t, soft) {
       if (!MTG.state.snap) return Math.max(0, t);
       const p = MTG.state.project;
+      if (!p) return Math.max(0, t);          // 未打开工程：没有可吸附的片段
       const tol = (soft ? 6 : 8) / MTG.state.pxPerSec;
       const cands = [0, MTG.state.playhead];
       p.clips.forEach(c => { cands.push(c.start, c.start + c.dur); });

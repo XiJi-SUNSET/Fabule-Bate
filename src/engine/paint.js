@@ -1,6 +1,6 @@
 
-import { T as themeTokens, FONTS as UI_FONTS } from './ui/theme.js';
-
+/* paint.js · Fabula WebGL2 绘画内核（DOM 前端壳的引擎，独立 IIFE，零模块依赖）
+   输入边界：ovc 覆盖画布区，接管绘制/导航/套索/变形；工作台与动作表经 window.__fabula* 挂口转发 */
 (() => {
 'use strict';
 
@@ -16,7 +16,9 @@ import { T as themeTokens, FONTS as UI_FONTS } from './ui/theme.js';
      4. GPU 端脏矩形撤销 —— 不 readPixels，快照留在显存
    ============================================================ */
 
-const DW = 1600, DH = 1000;          // 文档分辨率
+/* 文档分辨率：随工程画幅设置变化（setDocSize 负责重建全部尺寸相关资源）。
+   默认 1600×1000。全引擎的尺寸正确性都指着这一对变量，不允许有第二份副本。 */
+let DW = 1600, DH = 1000;
 const UNDO_MAX_BYTES = 192 * 1024 * 1024;   // 显存保护硬上限（不随偏好变）
 /* 步数上限来自统一偏好（设置面板可调）；引擎独立可跑时兜底 40 */
 function undoLimit() {
@@ -32,8 +34,6 @@ const glc = document.getElementById('gl');
 const ovc = document.getElementById('ov');
 const stage = document.getElementById('stage');
 const errBox = document.getElementById('err');
-const uic = document.getElementById('ui');      /* 自绘 UI 层（工具条/色板/HUD 全画在这里） */
-const uctx = uic.getContext('2d');
 
 const gl = glc.getContext('webgl2', {
   /* alpha:true —— 文档外区域输出透明，透出 .board-stage 的 CSS 底色（montage 同款观感：
@@ -549,10 +549,17 @@ void main(){
   frag = mix(base, vec4(u_color.rgb, 1.0), f);
 }`;
 
-/* --- 8. 呈现（背景棋盘 + 视图变换 + 实时笔画预览）--- */
+/* --- 8. 呈现（双图层合成 + 底图 + 视图变换 + 实时笔画预览）---
+   由下至上：底图（洋葱皮+参考层，DOM 合成一张送来）→ bg → fg，全按 straight-alpha over。
+   输出**保留 alpha** —— 纸色/画板底色由 DOM 的 CSS 提供，引擎不再把底色烧进画面：
+   帧文件是透明底 PNG，"屏幕上看到的"和"存出去/导出的"从此走同一条语义。 */
 const DISP_FS = HEAD + GRAIN + `
 in vec2 vUV;
-uniform sampler2D u_layer;
+uniform sampler2D u_bot;       // bg 层
+uniform sampler2D u_top;       // fg 层
+uniform sampler2D u_back;      // 底图（洋葱皮 + 参考层）
+uniform float u_backA;
+uniform float u_active;        // 1 = 当前层是 fg，0 = 当前层是 bg
 uniform sampler2D u_stroke;
 uniform sampler2D u_mask;
 uniform vec4 u_color;
@@ -560,8 +567,7 @@ uniform float u_opacity;
 uniform float u_erase;
 uniform vec2 u_viewRes;
 uniform vec2 u_docRes;
-uniform vec3 u_view;      // scale, ox, oy
-uniform vec3 u_paper;      // 画布底色（montage 的 paper：纯预览层，不进导出/帧文件）
+uniform vec3 u_view;           // scale, ox, oy
 uniform float u_xfOn;
 uniform sampler2D u_xfBack;
 uniform sampler2D u_xfSrc;
@@ -569,6 +575,16 @@ uniform mat2 u_xfLin;
 uniform vec2 u_xfOff;
 uniform vec4 u_xfBox;
 out vec4 frag;
+
+/* 笔画预览叠加：与 COMP 完全同式，收笔瞬间才不跳变 */
+vec4 strokeOver(vec4 base, vec2 uv, vec2 gr) {
+  float cov = texture(u_stroke, uv).a * gr.x * u_opacity * texture(u_mask, uv).r;
+  if (u_erase > 0.5) return base * (1.0 - cov);
+  vec3 rgb = u_color.rgb;
+  if (u_pigment > 0.001) rgb = clamp(rgb * (1.0 + u_pigment * (gr.y - 0.5) * 1.7), 0.0, 1.0);
+  vec4 src = vec4(rgb * cov, cov);
+  return src + base * (1.0 - src.a);
+}
 void main(){
   vec2 sp = vec2(vUV.x * u_viewRes.x, vUV.y * u_viewRes.y);
 
@@ -579,20 +595,14 @@ void main(){
     return;
   }
   vec2 uv = vec2(doc.x/u_docRes.x, 1.0 - doc.y/u_docRes.y);
-  vec4 base = texture(u_layer, uv);
-  if (u_xfOn > 0.5) base = texture(u_xfBack, uv);   /* 变形预览：图层被拆成背景+内容 */
   vec2 gr = grainPair(doc);                   /* 与 COMP 用同一套公式，收笔瞬间才不会跳变 */
-  float cov = texture(u_stroke, uv).a * gr.x * u_opacity
-            * texture(u_mask, uv).r;          /* 掩膜在这里乘，和 COMP 完全同式 */
-  vec4 p;
-  if (u_erase > 0.5) {
-    p = base * (1.0 - cov);
-  } else {
-    vec3 rgb = u_color.rgb;
-    if (u_pigment > 0.001) rgb = clamp(rgb * (1.0 + u_pigment * (gr.y - 0.5) * 1.7), 0.0, 1.0);
-    vec4 src = vec4(rgb * cov, cov);
-    p = src + base * (1.0 - src.a);
-  }
+
+  vec4 botC = texture(u_bot, uv);
+  vec4 topC = texture(u_top, uv);
+  /* 预览只作用在当前层；变形会话期间当前层被拆成"背景 + 内容"两半 */
+  vec4 actC = (u_active > 0.5) ? topC : botC;
+  if (u_xfOn > 0.5) actC = texture(u_xfBack, uv);
+  actC = strokeOver(actC, uv, gr);
   if (u_xfOn > 0.5) {
     /* 内容用逆矩阵采样：屏幕像素反查它在源纹理里的出处。
        边缘羽化与提交着色器同一套式子，预览和落定逐像素一致。 */
@@ -602,10 +612,15 @@ void main(){
              * (1.0 - smoothstep(u_xfBox.z - f, u_xfBox.z + f, sc.x));
     float by = smoothstep(u_xfBox.y - f, u_xfBox.y + f, sc.y)
              * (1.0 - smoothstep(u_xfBox.w - f, u_xfBox.w + f, sc.y));
-    vec4 s = texture(u_xfSrc, vec2(sc.x / u_docRes.x, 1.0 - sc.y / u_docRes.y)) * (bx * by);
-    p = s + p * (1.0 - s.a);
+    vec4 sx = texture(u_xfSrc, vec2(sc.x / u_docRes.x, 1.0 - sc.y / u_docRes.y)) * (bx * by);
+    actC = sx + actC * (1.0 - sx.a);
   }
-  frag = vec4(p.rgb + u_paper * (1.0 - p.a), 1.0);
+  if (u_active > 0.5) topC = actC; else botC = actC;
+
+  vec4 r = texture(u_back, uv) * u_backA;
+  r = botC + r * (1.0 - botC.a);
+  r = topC + r * (1.0 - topC.a);
+  frag = r;
 }`;
 
 /* ============================================================
@@ -621,7 +636,7 @@ const P_blur   = mkProg(FS_VS, BLUR_FS, ['u_tex','u_dir','u_radius','u_bbox','u_
 const P_blurmix= mkProg(FS_VS, BLUR_MIX_FS, ['u_blur','u_orig','u_mask','u_p0','u_p1','u_radius','u_hardness','u_strength','u_blurRadius','u_bbox','u_res']);
 const P_warp   = mkProg(FS_VS, WARP_FS, ['u_src','u_mask','u_p0','u_p1','u_radius','u_hardness','u_mode','u_strength','u_bbox','u_res']);
 const P_bucket = mkProg(FS_VS, BUCKET_FS, ['u_paint','u_prev','u_center','u_sampleRadius','u_blend','u_res']);
-const P_disp   = mkProg(FS_VS, DISP_FS, ['u_layer','u_stroke','u_mask','u_color','u_opacity','u_erase','u_viewRes','u_docRes','u_view','u_paper','u_grain','u_grainScale','u_pigment','u_xfOn','u_xfBack','u_xfSrc','u_xfLin','u_xfOff','u_xfBox']);
+const P_disp   = mkProg(FS_VS, DISP_FS, ['u_bot','u_top','u_back','u_backA','u_active','u_stroke','u_mask','u_color','u_opacity','u_erase','u_viewRes','u_docRes','u_view','u_grain','u_grainScale','u_pigment','u_xfOn','u_xfBack','u_xfSrc','u_xfLin','u_xfOff','u_xfBox']);
 const P_xfe    = mkProg(FS_VS, XF_EXTRACT_FS, ['u_layer','u_mask','u_keep']);
 const P_xfc    = mkProg(FS_VS, XF_COMMIT_FS, ['u_back','u_src','u_xfLin','u_xfOff','u_xfBox','u_rect','u_res']);
 const P_flood  = mkProg(FS_VS, FLOOD_FS, ['u_layer','u_flood','u_mask','u_color']);
@@ -641,22 +656,81 @@ gl.enableVertexAttribArray(0);
 gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 gl.bindVertexArray(null);
 
-/* ---------- 纹理 ---------- */
-let texA = mkTex(DW, DH, gl.LINEAR);
-let texB = mkTex(DW, DH, gl.LINEAR);
-let paintCur = texA, paintAlt = texB;
-let strokeTex = mkTex(DW, DH, gl.LINEAR);
-let blurTmp   = mkTex(DW, DH, gl.LINEAR);
-let fxTmp     = mkTex(DW, DH, gl.LINEAR);   // 破坏性工具改写脏矩形时的暂存
-let preScratch= mkTex(DW, DH, gl.LINEAR);   // 破坏性工具的前置快照
-let bucketA   = mkTex(1, 1, gl.NEAREST);
-let bucketB   = mkTex(1, 1, gl.NEAREST);
-let bucketCur = bucketA, bucketAlt = bucketB;
-let maskTex   = mkTex(DW, DH, gl.LINEAR, gl.RGBA8, gl.UNSIGNED_BYTE);
-let exportTex = mkTex(DW, DH, gl.NEAREST, gl.RGBA8, gl.UNSIGNED_BYTE);
-let floodTex  = mkTex(DW, DH, gl.NEAREST, gl.RGBA8, gl.UNSIGNED_BYTE);   // 油漆桶的填充区域掩膜
+/* ---------- 纹理 ----------
+   双图层：bg（底色/背景）与 fg（线稿/主绘画层），各自一对 ping-pong 纹理。
+   `paintCur/paintAlt` 永远指向**当前层**的那一对 —— 笔画、工具、撤销、导出
+   都只认这一对，切层不动任何既有代码路径（见 setLayer）。
+   全部尺寸相关资源集中在 allocTextures()，setDocSize 换画幅时整体重建。 */
+const LAYER_IDS = ['bg', 'fg'];
+let layerBank = { bg: { cur: null, alt: null }, fg: { cur: null, alt: null } };
+let layer = 'fg';
+let paintCur = null, paintAlt = null;
 
-function swapPaint(){ const t = paintCur; paintCur = paintAlt; paintAlt = t; }
+let strokeTex = null;
+let blurTmp   = null;
+let fxTmp     = null;      // 破坏性工具改写脏矩形时的暂存
+let preScratch= null;      // 破坏性工具的前置快照
+let bucketA   = null, bucketB = null;
+let bucketCur = null, bucketAlt = null;
+let maskTex   = null;
+let exportTex = null;
+let floodTex  = null;      // 油漆桶的填充区域掩膜
+let backTex   = null;      // 底图：洋葱皮 + 参考层（DOM 合成一张送来；不写帧、不导出）
+let backOn    = false, backAlpha = 1;
+
+function allocTextures() {
+  layerBank = {
+    bg: { cur: mkTex(DW, DH, gl.LINEAR), alt: mkTex(DW, DH, gl.LINEAR) },
+    fg: { cur: mkTex(DW, DH, gl.LINEAR), alt: mkTex(DW, DH, gl.LINEAR) },
+  };
+  paintCur = layerBank[layer].cur;
+  paintAlt = layerBank[layer].alt;
+  strokeTex  = mkTex(DW, DH, gl.LINEAR);
+  blurTmp    = mkTex(DW, DH, gl.LINEAR);
+  fxTmp      = mkTex(DW, DH, gl.LINEAR);
+  preScratch = mkTex(DW, DH, gl.LINEAR);
+  bucketA    = mkTex(1, 1, gl.NEAREST);
+  bucketB    = mkTex(1, 1, gl.NEAREST);
+  bucketCur = bucketA; bucketAlt = bucketB;
+  maskTex    = mkTex(DW, DH, gl.LINEAR, gl.RGBA8, gl.UNSIGNED_BYTE);
+  exportTex  = mkTex(DW, DH, gl.NEAREST, gl.RGBA8, gl.UNSIGNED_BYTE);
+  floodTex   = mkTex(DW, DH, gl.NEAREST, gl.RGBA8, gl.UNSIGNED_BYTE);
+  backTex    = mkTex(DW, DH, gl.LINEAR);
+  backOn = false; backAlpha = 1;
+  for (const t of [layerBank.bg.cur, layerBank.bg.alt, layerBank.fg.cur, layerBank.fg.alt,
+                   strokeTex, blurTmp, fxTmp, preScratch, backTex]) clearTex(t);
+  clearSmall(bucketA); clearSmall(bucketB);
+}
+
+/* 切层：把 ping-pong 指针搬到目标层的那一对上。
+   进行中的会话（笔画/变形）先按原层收干净 —— 跨层的半截会话只会污染目标层。
+   silent：宿主内部"借道"操作（如把白底铺到 bg 再切回来）不惊动 onLayerChange。 */
+function setLayer(id, silent) {
+  if (!layerBank[id] || id === layer) return false;
+  if (drawing) endStroke();
+  layerBank[layer].cur = paintCur; layerBank[layer].alt = paintAlt;
+  layer = id;
+  paintCur = layerBank[id].cur; paintAlt = layerBank[id].alt;
+  if (!silent) {
+    updateStat();
+    try { const cb = window.__fabulaEngine && window.__fabulaEngine.onLayerChange; if (cb) cb(id); } catch (_) {}
+  }
+  return true;
+}
+const getLayer = () => layer;
+/* 在指定层上做事（默认当前层），做完回到原层 —— 宿主"铺底色/清底色"免去两次切层通知 */
+function withLayer(id, fn) {
+  if (!id || id === layer) { fn(); return true; }
+  const prev = layer;
+  if (!setLayer(id, true)) return false;
+  try { fn(); } finally { setLayer(prev, true); }
+  return true;
+}
+
+function swapPaint(){
+  const t = paintCur; paintCur = paintAlt; paintAlt = t;
+  layerBank[layer].cur = paintCur; layerBank[layer].alt = paintAlt;
+}
 function swapBucket(){ const t = bucketCur; bucketCur = bucketAlt; bucketAlt = t; }
 
 function clearTex(tex) {
@@ -675,9 +749,7 @@ function clearSmall(tex) {
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
 }
-[paintCur, paintAlt, strokeTex, blurTmp, fxTmp, preScratch, bucketA, bucketB].forEach(t => {
-  t === bucketA || t === bucketB ? clearSmall(t) : clearTex(t);
-});
+allocTextures();
 
 /* ============================================================
    选区掩膜（用 2D canvas 光栅化，白=选中）
@@ -687,11 +759,18 @@ maskCv.width = DW; maskCv.height = DH;
 /* 每次改选区都要 getImageData 读回来提轮廓，所以这里要 willReadFrequently */
 const mctx = maskCv.getContext('2d', { willReadFrequently: true });
 
+/* 是否有活动选区：掩膜"复位成全白"= 没有选区（PS 语义：无选区即全画布可画）。
+   靠显式标志跟踪，不去全图扫描掩膜 —— 那是每帧几十毫秒的无谓开销。 */
+let selFlag = false;
+function selActive() { return selFlag; }
+
 function maskReset() {
   mctx.globalCompositeOperation = 'source-over';
   mctx.fillStyle = '#fff';
   mctx.fillRect(0, 0, DW, DH);
+  selFlag = false;
   maskChanged();
+  notifySel();
 }
 /* canvas → 纹理上传的唯一入口。FLIP_Y 的开与关必须成对出现，
    漏关会污染之后所有 texImage2D 的方向 —— 收到一处就漏不了 */
@@ -834,6 +913,7 @@ function copyBBox(src, dst) {
 
 function pushUndo(entry) {
   if (!entry) return;
+  if (entry.layer === undefined) entry.layer = layer;   /* 跨层撤销：快照记住自己属于哪一层 */
   undoStack.push(entry);
   undoBytes += entry.bytes;
   while (undoStack.length > undoLimit() || (undoBytes > UNDO_MAX_BYTES && undoStack.length > 4)) {
@@ -844,25 +924,34 @@ function pushUndo(entry) {
   for (const r of redoStack) { gl.deleteTexture(r.tex); }
   redoStack.length = 0;
   updateStat();
+  notifyDirty();
 }
 
 function doUndo() {
-  if (!undoStack.length) return;
+  if (!undoStack.length) return false;
   const e = undoStack.pop(); undoBytes -= e.bytes;
+  if (e.layer && e.layer !== layer) setLayer(e.layer);   /* 快照属于哪层，就切回哪层再还原 */
   const cur = snapRegion(paintCur, e.x, e.y, e.w, e.h);
+  if (cur) cur.layer = layer;
   restoreRegion(e);
   gl.deleteTexture(e.tex);
   if (cur) redoStack.push(cur);
   updateStat();
+  notifyDirty();
+  return true;
 }
 function doRedo() {
-  if (!redoStack.length) return;
+  if (!redoStack.length) return false;
   const e = redoStack.pop();
+  if (e.layer && e.layer !== layer) setLayer(e.layer);
   const cur = snapRegion(paintCur, e.x, e.y, e.w, e.h);
+  if (cur) cur.layer = layer;
   restoreRegion(e);
   gl.deleteTexture(e.tex);
   if (cur) { undoStack.push(cur); undoBytes += cur.bytes; }
   updateStat();
+  notifyDirty();
+  return true;
 }
 
 /* 整层铺底色 */
@@ -1067,7 +1156,13 @@ const TOOL_BY_ID = {};
 for (const t of TOOLS) if (!t.gap) TOOL_BY_ID[t.id] = t;
 
 const DESTRUCTIVE = { smudge: 1, blur: 1, warp: 1 };
-const isStrokeTool = id => !DESTRUCTIVE[id] && id !== 'lasso' && id !== 'transform' && id !== 'fill';   /* 走笔画缓冲的绘制类 */
+/* 形状工具（拖一条线 / 一个框）与导航工具（不落墨）：
+   都不走笔画缓冲，但形状工具提交时仍复用笔迹管线（笔刷/压感/颗粒全生效）。
+   montage 工具条的 line / rect / eyedrop / hand / zoom 由此接进引擎。 */
+const SHAPE_TOOLS = { line: 1, rect: 1 };
+const NAV_TOOLS = { hand: 1, zoom: 1, eyedrop: 1 };
+const isStrokeTool = id => !DESTRUCTIVE[id] && !SHAPE_TOOLS[id] && !NAV_TOOLS[id]
+                        && id !== 'lasso' && id !== 'transform' && id !== 'fill';   /* 走笔画缓冲的绘制类 */
 
 let tool = 'pen';
 let color = [0.16, 0.17, 0.19];
@@ -1103,13 +1198,12 @@ function toDoc(clientX, clientY) {
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = stage.clientWidth, h = stage.clientHeight;
-  for (const c of [glc, ovc, uic]) {
+  for (const c of [glc, ovc]) {
     c.width = Math.max(1, Math.round(w * dpr));
     c.height = Math.max(1, Math.round(h * dpr));
   }
   ovc.style.width = w + 'px'; ovc.style.height = h + 'px';
-  /* 界面全部 DOM 化后，uic 只承担画布区的覆盖层（光标/选区路径），与 stage 同尺寸 */
-  uic.style.width = w + 'px'; uic.style.height = h + 'px';
+  /* 界面全部 DOM 化后，ovc 只承担画布区的覆盖层（光标/选区路径），与 stage 同尺寸 */
 }
 
 /* ============================================================
@@ -1669,6 +1763,81 @@ function pushPointerSamples(e) {
 let penRubberStroke = false;
 function erasing() { return tool === 'eraser' || penRubberStroke; }
 
+/* ---------- 形状 / 取色 / 缩放拖拽（montage 工具条的行为契约） ---------- */
+let shapeCur = null;      /* 正在拖的形状：{ type:'line'|'rect', a, b, shift } */
+let zoomDrag = null;      /* 缩放工具拖拽中：{ x, y, s0, moved } */
+
+/* 形状 → 采样点序列。步长跟笔刷尺寸走：太疏会在拐角处露出节点，太密纯属浪费 */
+function shapePoints(s) {
+  let bx = s.b.x, by = s.b.y;
+  const ax = s.a.x, ay = s.a.y;
+  if (s.shift) {
+    if (s.type === 'line') {                                 /* 45° 吸附 */
+      const dx = bx - ax, dy = by - ay;
+      const ang = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
+      const len = Math.hypot(dx, dy);
+      bx = ax + Math.cos(ang) * len; by = ay + Math.sin(ang) * len;
+    } else {                                                 /* 正方形 */
+      const k = Math.max(Math.abs(bx - ax), Math.abs(by - ay));
+      bx = ax + (bx < ax ? -k : k); by = ay + (by < ay ? -k : k);
+    }
+  }
+  const step = Math.max(0.5, P.size * 0.15);
+  const pts = [];
+  const seg = (x0, y0, x1, y1) => {
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    const n = Math.max(1, Math.ceil(len / step));
+    for (let i = 0; i < n; i++) pts.push({ x: x0 + (x1 - x0) * i / n, y: y0 + (y1 - y0) * i / n, p: 1, tl: 0, az: 0 });
+  };
+  if (s.type === 'line') { seg(ax, ay, bx, by); }
+  else { seg(ax, ay, bx, ay); seg(bx, ay, bx, by); seg(bx, by, ax, by); seg(ax, by, ax, ay); }
+  pts.push({ x: bx, y: by, p: 1, tl: 0, az: 0 });
+  return pts;
+}
+
+/* 提交形状：走与自由笔画完全相同的管线（起笔 → 塞点 → 收笔），
+   于是撤销快照、掩膜、颗粒、压感曲线一个都不会漏。 */
+function commitShape() {
+  const s = shapeCur;
+  shapeCur = null;
+  if (!s) return false;
+  const pts = shapePoints(s);
+  if (pts.length < 2) return false;
+  const ev = { pointerType: 'mouse', pressure: 1, buttons: 1, clientX: 0, clientY: 0 };
+  beginStroke(ev, false, false);
+  for (const pt of pts) inputQ.push(pt);
+  endStroke(ev);
+  inputQ.length = 0;
+  return true;
+}
+
+/* 取色：读**当前层**在该点的像素，与纸色合成后作为"看到的颜色"。
+   只读 1×1 —— 整层 readPixels 在这个分辨率下要几十毫秒，吸管会明显卡手。 */
+function pickColorAt(d) {
+  if (d.x < 0 || d.y < 0 || d.x >= DW || d.y >= DH) return false;
+  const x = Math.floor(d.x), y = Math.floor(d.y);
+  beginPass(exportTex);
+  gl.disable(gl.BLEND); gl.disable(gl.SCISSOR_TEST);
+  gl.viewport(0, 0, 1, 1);
+  gl.useProgram(P_blit.p);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, paintCur);
+  gl.uniform1i(P_blit.u.u_tex, 0);
+  gl.uniform4f(P_blit.u.u_src, x / DW, 1 - (y + 1) / DH, 1 / DW, 1 / DH);
+  fsQuad();
+  const px = new Uint8Array(4);
+  gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  const a = px[3] / 255;
+  const paper = [0.96, 0.94, 0.92];
+  color = [0, 1, 2].map(i => (px[i] / 255) * a + paper[i] * (1 - a));
+  notifyColor();
+  return true;
+}
+
+function notifyColor() {
+  try { const cb = window.__fabulaEngine && window.__fabulaEngine.onColor; if (cb) cb(color.slice()); } catch (_) {}
+}
+
 /* 起笔压力门槛（对照 PS 的行为）：极轻悬停不落笔。
    raw 低于死区 = 还没真正按压 —— 不开始笔画，等压力越过门槛才起笔。
    这同时消灭"整笔超低压力"的笔画，压感判定不再被极轻悬停污染。 */
@@ -1677,8 +1846,9 @@ let penPendingRubber = false;
 let penPendingMoved = 0;               // pending 期间累计位移（恒 0 设备自愈用）
 let penPendingXY = { x: 0, y: 0 };
 
-uic.addEventListener('pointerdown', (e) => {
-  if (uiPointerDown(e)) return;   /* 点在自绘 UI 上：处理 UI，不进画布 */
+ovc.addEventListener('pointerdown', (e) => {
+  { const ws = window.__fabulaWorkspace;
+    if (ws && ws.onPointerDown && ws.onPointerDown(e.clientX, e.clientY)) return; }
   { const pb = window.__fabulaPlayback;
     if (pb && pb.active && pb.active()) return; }   /* 播放/暂停态：画布不吃笔 */
 
@@ -1697,14 +1867,14 @@ uic.addEventListener('pointerdown', (e) => {
 
   /* --- 按键映射 --- */
   const rubber = isPen && (e.button === 5 || (e.buttons & 32) !== 0); /* 笔尾橡皮 */
-  if (e.button === 1 || spaceDown || (isPen && e.button === 2)) { startPan(e); return; }
+  if (e.button === 1 || spaceDown || tool === 'hand' || (isPen && e.button === 2)) { startPan(e); return; }
 
   const isDown = (e.button === 0) || rubber;
   if (!isDown) return;
   /* 笔悬停/未落笔时不该出墨 */
   if (isPen && e.buttons === 0) return;
 
-  try { uic.setPointerCapture(e.pointerId); } catch (_) { /* 合成事件没有有效 pointerId */ }
+  try { ovc.setPointerCapture(e.pointerId); } catch (_) { /* 合成事件没有有效 pointerId */ }
   activePointer = e.pointerId;
 
   const d = toDoc(e.clientX, e.clientY);
@@ -1718,6 +1888,16 @@ uic.addEventListener('pointerdown', (e) => {
     lassoCur = { pts: [d], mode: lassoMode };
     return;
   }
+
+  if (tool === 'eyedrop') { pickColorAt(d); return; }
+
+  if (tool === 'zoom') {
+    if (e.altKey) { zoomAt(e.clientX, e.clientY, 1 / 1.35); return; }   /* Alt+点按：缩小 */
+    zoomDrag = { x: e.clientX, y: e.clientY, s0: view.scale, moved: 0 };
+    return;
+  }
+
+  if (SHAPE_TOOLS[tool]) { shapeCur = { type: tool, a: d, b: d, shift: !!e.shiftKey }; return; }
 
   /* 起笔压力门槛：pen 输入压力低于死区 = 笔还没真正压下，不落笔（PS 同款行为）。
      fill / lasso 是即时操作不走门槛；鼠标/触屏没有压力语义也不走；
@@ -1791,8 +1971,7 @@ uic.addEventListener('pointerdown', (e) => {
   }
 }
 
-uic.addEventListener('pointermove', (e) => {
-  if (uiDragSlider) { panelDragMove(e.clientX); return; }
+ovc.addEventListener('pointermove', (e) => {
   { const ws = window.__fabulaWorkspace;
     if (ws && ws.onPointerMove && ws.onPointerMove(e.clientX, e.clientY)) return; }
   const d = toDoc(e.clientX, e.clientY);
@@ -1806,6 +1985,15 @@ uic.addEventListener('pointermove', (e) => {
   }
   if (panActive) { doPan(e); return; }
   if (activePointer !== null && e.pointerId !== activePointer) return;
+
+  if (tool === 'zoom' && zoomDrag) {
+    const dx = e.clientX - zoomDrag.x;
+    if (Math.abs(dx) > zoomDrag.moved) zoomDrag.moved = Math.abs(dx);
+    const target = Math.max(0.02, Math.min(64, zoomDrag.s0 * Math.exp(dx * 0.006)));
+    if (target !== view.scale) zoomAt(zoomDrag.x, zoomDrag.y, target / view.scale);
+    return;
+  }
+  if (shapeCur) { shapeCur.b = d; shapeCur.shift = !!e.shiftKey; return; }
 
   if (xf.on) { xfMove(e, d); return; }
 
@@ -1877,15 +2065,21 @@ function endStroke(e) {
   penRubberStroke = false;
   strokeInfo.dirty = null;
   strokeInfo.lastInput = null;
-  updatePenStat();
 }
 
-uic.addEventListener('pointerup', (e) => {
-  if (uiDragSlider) { uiDragSlider = null; return; }
+ovc.addEventListener('pointerup', (e) => {
   { const ws = window.__fabulaWorkspace;
     if (ws && ws.onPointerUp) ws.onPointerUp(e.clientX, e.clientY); }
   if (panActive) { endPan(); return; }
   if (activePointer !== null && e.pointerId !== activePointer) return;
+  if (zoomDrag) {
+    /* 几乎没拖动 = 点按：放大；Alt+点按缩小 */
+    if (zoomDrag.moved < 4) zoomAt(e.clientX, e.clientY, e.altKey ? 1 / 1.35 : 1.35);
+    zoomDrag = null;
+    activePointer = null;
+    return;
+  }
+  if (shapeCur) { commitShape(); activePointer = null; return; }
   penPending = false;   /* 极轻悬停就抬笔 = 无痕，与 PS 一致 */
   /* pointerup 自身也可能带着合并采样点 —— 不看就会在收笔处丢最后一段 */
   if (drawing && (tool !== 'lasso')) pushPointerSamples(e);
@@ -1893,10 +2087,12 @@ uic.addEventListener('pointerup', (e) => {
   endStroke(e);
   inputQ.length = 0;
 });
-uic.addEventListener('pointercancel', (e) => {
+ovc.addEventListener('pointercancel', (e) => {
   if (panActive) { endPan(); return; }
   activePointer = null;
   penPending = false;
+  shapeCur = null;
+  zoomDrag = null;
   lassoCur = null;
   if (xf.on) xf.drag = null;
   /* 走正常收尾流程：以前这里只 bakeStroke() 不推撤销快照，
@@ -1904,7 +2100,7 @@ uic.addEventListener('pointercancel', (e) => {
   if (drawing) endStroke(e);
   inputQ.length = 0;
 });
-uic.addEventListener('lostpointercapture', (e) => {
+ovc.addEventListener('lostpointercapture', (e) => {
   if (activePointer !== null && e.pointerId === activePointer) {
     activePointer = null;
     penPending = false;   /* pending 悬置时丢了捕获：不能让后续 move 裸奔起笔 */
@@ -1913,9 +2109,9 @@ uic.addEventListener('lostpointercapture', (e) => {
     else commitLasso();          /* 套索中途丢了捕获，不能让路径悬在半空 */
   }
 });
-uic.addEventListener('pointerleave', () => { lastCursor.inside = false; });
-uic.addEventListener('contextmenu', (e) => e.preventDefault());
-uic.addEventListener('dblclick', () => { if (xf.on) xfCommit(); });
+ovc.addEventListener('pointerleave', () => { lastCursor.inside = false; });
+ovc.addEventListener('contextmenu', (e) => e.preventDefault());
+ovc.addEventListener('dblclick', () => { if (xf.on) xfCommit(); });
 
 /* ---------- 套索光栅化 ----------
    掩膜是一张**不透明灰度图**：白 = 选中，黑 = 未选中。
@@ -1937,7 +2133,9 @@ function rasterizeLasso(lp) {
   mctx.closePath();
   mctx.fill();
   mctx.restore();
+  selFlag = true;
   maskChanged();
+  notifySel();
 }
 
 /* 收尾：把进行中的路径落实成选区。中途切工具 / 失去指针捕获时也要走这里，
@@ -2048,7 +2246,6 @@ function xfCommit() {
   if (!xf.on) return;
   xf.on = false;
   xf.drag = null;
-  uic.style.cursor = '';
   /* 纹丝未动的会话不配拥有一个撤销步骤，也不该把选区清掉 */
   if (Math.abs(xf.ang) < 1e-6 && Math.abs(xf.sx - 1) < 1e-6 && Math.abs(xf.sy - 1) < 1e-6
       && Math.abs(xf.tx) < 0.5 && Math.abs(xf.ty) < 0.5) return;
@@ -2089,7 +2286,6 @@ function xfCancel() {
   if (!xf.on) return;
   xf.on = false;
   xf.drag = null;
-  uic.style.cursor = '';
 }
 
 /* ---------- 命中判定 ----------
@@ -2131,7 +2327,6 @@ function xfDown(e, d) {
 function xfMove(e, d) {
   if (!xf.drag) {
     xf.hover = xfHit(d);
-    uic.style.cursor = XF_CURSORS[xf.hover] || '';
     return;
   }
   const g = xf.drag;
@@ -2186,8 +2381,7 @@ function startPan(e) {
   panActive = true;
   panStart.x = e.clientX; panStart.y = e.clientY;
   panStart.vx = view.x; panStart.vy = view.y;
-  try { uic.setPointerCapture(e.pointerId); } catch (_) { /* 合成事件没有有效 pointerId */ }
-  uic.style.cursor = 'grabbing';
+  try { ovc.setPointerCapture(e.pointerId); } catch (_) { /* 合成事件没有有效 pointerId */ }
 }
 function doPan(e) {
   const r = glc.getBoundingClientRect();
@@ -2195,19 +2389,13 @@ function doPan(e) {
   view.x = panStart.vx + (e.clientX - panStart.x) * k;
   view.y = panStart.vy + (e.clientY - panStart.y) * k;
 }
-function endPan() { panActive = false; uic.style.cursor = ''; }
 
-uic.addEventListener('wheel', (e) => {
+ovc.addEventListener('wheel', (e) => {
   e.preventDefault();
   /* 工作台层（时间轴缩放/滚动、镜头面板滚动）优先消费 */
   { const ws = window.__fabulaWorkspace;
     if (ws && ws.onWheel && ws.onWheel(e.clientX, e.clientY, e)) return; }
-  /* 面板上滚轮 = 滚动面板；画布上滚轮 = 以光标为锚缩放（抽屉收起时不再拦） */
-  { const vw2 = window.__fabulaView;
-    if ((!vw2 || vw2.paramsOpen()) && panelInRect(e.clientX, e.clientY)) {
-      panelUI.scrollY = Math.max(0, Math.min(panelUI.maxScroll, panelUI.scrollY + e.deltaY));
-      return;
-    } }
+  /* 画布上滚轮 = 以光标为锚缩放 */
   const r = glc.getBoundingClientRect();
   const k = glc.width / r.width;
   const sx = (e.clientX - r.left) * k, sy = (e.clientY - r.top) * k;
@@ -2221,7 +2409,7 @@ uic.addEventListener('wheel', (e) => {
 /* ---------- 键盘 ---------- */
 window.addEventListener('keydown', (e) => {
   const tag = e.target.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) return;
   /* 动作表优先：工具选择与命令键位（撤销/重做/笔刷大小/视图…）都可由用户重绑
      （data/actions.js）。会话类键位（下方 xf 块、空格平移、Esc 取消、Shift+W
      液化模式、Ctrl+A/Shift+I 选区）不进动作表，保持引擎内处理。 */
@@ -2241,7 +2429,6 @@ window.addEventListener('keydown', (e) => {
       return;
     }
   }
-  if (e.code === 'Space') { spaceDown = true; uic.style.cursor = 'grab'; e.preventDefault(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); doRedo(); return; }   /* Ctrl+Y 习惯键（重做主键位在动作表） */
   if (e.key === 'Escape') {
     if (lassoCur) { cancelLasso(); return; }        /* Esc 取消正在拖的这条套索 */
@@ -2260,13 +2447,13 @@ window.addEventListener('keydown', (e) => {
   }
 });
 window.addEventListener('keyup', (e) => {
-  if (e.code === 'Space') { spaceDown = false; if (!panActive) uic.style.cursor = ''; }
 });
 
 /* ============================================================
    UI 构建
    ============================================================ */
-/* DOM UI 已移除：工具条 / 色板 / HUD 全部由自绘 UI（drawUI → ui 层 canvas）承担 */
+/* DOM 前端壳接管：工具条 / 色板 / HUD 由 host DOM 渲染。
+   本区保留"参数定义唯一来源"：toolParams / panelRows / fmtPanelVal / 按笔记忆 */
 
 const toolParams = {};
 
@@ -2314,13 +2501,15 @@ function invertMask() {
     d[i] = 255 - d[i]; d[i+1] = d[i]; d[i+2] = d[i]; d[i+3] = 255;
   }
   mctx.putImageData(img, 0, 0);
+  selFlag = true;
   maskChanged();          /* 轮廓要从新掩膜重提，否则反选完就看不清选区在哪了 */
+  notifySel();
 }
 
 /* 顶栏动作（撤销/重做/铺底色/清空/导出）移入自绘工具条 —— 见 doAction */
 
-/* 把图层读回 CPU（RGBA8；readPixels 行序自下而上：文档 y 对应 buf 行 H-1-y）。
-   导出 PNG 与油漆桶共用这一条读回路径。 */
+/* 把**当前层**读回 CPU（RGBA8；readPixels 行序自下而上：文档 y 对应 buf 行 H-1-y）。
+   油漆桶/取色/验证器共用这一条单层读回路径。 */
 function readLayerRGBA8() {
   beginPass(exportTex);
   gl.disable(gl.BLEND); gl.disable(gl.SCISSOR_TEST);
@@ -2336,36 +2525,245 @@ function readLayerRGBA8() {
   return buf;
 }
 
-function exportPNG() {
-  const buf = readLayerRGBA8();
+/* 合成读回：bg 在下、fg 在上，合成出**透明底**的整帧像素 ——
+   这就是 montage 帧文件的正身（不含底图/纸色/洋葱皮，它们只是显示）。
+   行序自下而上，翻正交给 rgbaToCanvas。 */
+function compositeRGBA8() {
+  beginPass(exportTex);
+  gl.disable(gl.SCISSOR_TEST);
+  gl.viewport(0, 0, DW, DH);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.enable(gl.BLEND);
+  /* straight-alpha over。alpha 通道必须单独用 (ONE, ONE_MINUS_SRC_ALPHA)，
+     否则半透明像素叠两层后 alpha 会算成 a² 那一套，帧文件边缘会莫名发淡。 */
+  gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  gl.useProgram(P_blit.p);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.uniform1i(P_blit.u.u_tex, 0);
+  for (const id of LAYER_IDS) {
+    gl.bindTexture(gl.TEXTURE_2D, layerBank[id].cur);
+    gl.uniform4f(P_blit.u.u_src, 0, 0, 1, 1);
+    fsQuad();
+  }
+  gl.disable(gl.BLEND);
+  const buf = new Uint8Array(DW * DH * 4);
+  gl.readPixels(0, 0, DW, DH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return buf;
+}
 
+/* CPU 侧 RGBA 缓冲（行序自下而上）→ 2D canvas（翻正） */
+function rgbaToCanvas(buf, w, h) {
   const out = document.createElement('canvas');
-  out.width = DW; out.height = DH;
+  out.width = w; out.height = h;
   const octx = out.getContext('2d');
-  const img = octx.createImageData(DW, DH);
-  for (let y = 0; y < DH; y++) {
-    const sy = DH - 1 - y;
-    for (let x = 0; x < DW; x++) {
-      const si = (sy * DW + x) * 4, di = (y * DW + x) * 4;
-      const a = buf[si + 3] / 255;
-      img.data[di]     = Math.round(buf[si]     + (1 - a) * 255);
-      img.data[di + 1] = Math.round(buf[si + 1] + (1 - a) * 255);
-      img.data[di + 2] = Math.round(buf[si + 2] + (1 - a) * 255);
-      img.data[di + 3] = 255;
-    }
+  const img = octx.createImageData(w, h);
+  for (let y = 0; y < h; y++) {
+    const sy = h - 1 - y;
+    img.data.set(buf.subarray(sy * w * 4, sy * w * 4 + w * 4), y * w * 4);
   }
   octx.putImageData(img, 0, 0);
+  return out;
+}
+
+/* 帧导出（透明底 PNG）——宿主写盘/做缩略图/播放都走这一条 */
+function exportDataURL() {
+  return rgbaToCanvas(compositeRGBA8(), DW, DH).toDataURL('image/png');
+}
+function exportBlob() {
+  const cv = rgbaToCanvas(compositeRGBA8(), DW, DH);
+  return new Promise(res => { cv.toBlob(b => res(b), 'image/png'); });
+}
+function exportPNG() {
   const a = document.createElement('a');
   a.download = 'fabula-' + Date.now() + '.png';
-  a.href = out.toDataURL('image/png');
+  a.href = exportDataURL();
   a.click();
 }
 
 /* ============================================================
-   自绘 UI（2D canvas，immediate mode）
-   —— 路线 A 的落地：界面不经过 DOM。工具条/色板/HUD/探针每帧重画，
-   命中区每帧重建，状态只存在数据里（tool / P / color / undoStack）。
+   帧 IO / 文档尺寸 / 底图（DOM 宿主的进出口）
+   ------------------------------------------------------------
+   montage 语义：帧文件 = 透明底 PNG；bg（底色）与 fg（线稿）是
+   同一文档的两层，导出即合成。底图（洋葱皮+参考层）只是显示，
+   既不写帧也不导出。
    ============================================================ */
+
+/* 位图源 → 可绘制的 Image/ImageBitmap（URL / Blob / ImageBitmap / canvas / img 通吃） */
+function decodeImageSource(src) {
+  return new Promise((resolve, reject) => {
+    if (typeof src === 'string') {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('图片解码失败: ' + src));
+      img.src = src;
+      return;
+    }
+    if (typeof ImageBitmap !== 'undefined' && src instanceof ImageBitmap) { resolve(src); return; }
+    if (typeof Blob !== 'undefined' && src instanceof Blob) { createImageBitmap(src).then(resolve, reject); return; }
+    if (src instanceof HTMLImageElement) {
+      if (src.complete && src.naturalWidth) { resolve(src); return; }
+      src.addEventListener('load', () => resolve(src), { once: true });
+      src.addEventListener('error', () => reject(new Error('图片解码失败')), { once: true });
+      return;
+    }
+    if (src instanceof HTMLCanvasElement) { resolve(src); return; }
+    reject(new Error('不支持的图像源'));
+  });
+}
+
+/* 位图铺进某一层（整幅替换）。
+   mode：stretch 拉伸铺满（帧文件与文档同尺寸时的正路）/ contain 等比居中 / none 原尺寸居中 */
+async function loadImageToLayer(src, opts) {
+  const o = Object.assign({ layer: 'fg', mode: 'stretch', clearUndo: true, fit: false }, opts || {});
+  if (!layerBank[o.layer]) return false;
+  const img = await decodeImageSource(src);
+  const sw = img.naturalWidth || img.width, sh = img.naturalHeight || img.height;
+  const cvs = document.createElement('canvas');
+  cvs.width = DW; cvs.height = DH;
+  const c = cvs.getContext('2d');
+  if (o.mode === 'stretch' || (sw === DW && sh === DH)) {
+    c.drawImage(img, 0, 0, DW, DH);
+  } else if (o.mode === 'contain') {
+    const k = Math.min(DW / sw, DH / sh), w = sw * k, h = sh * k;
+    c.drawImage(img, (DW - w) / 2, (DH - h) / 2, w, h);
+  } else {
+    c.drawImage(img, (DW - sw) / 2, (DH - sh) / 2);
+  }
+  if (drawing) endStroke();
+  if (layer !== o.layer) setLayer(o.layer);
+  /* 借 exportTex 中转：uploadCanvasTex 会把纹理重写成 canvas 尺寸的 RGBA8，
+     不能直接怼到图层纹理上（丢浮点精度、且尺寸契约会被破坏） */
+  uploadCanvasTex(exportTex, cvs, gl.NEAREST);
+  beginPass(paintCur);
+  gl.disable(gl.BLEND);
+  gl.useProgram(P_blit.p);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, exportTex);
+  gl.uniform1i(P_blit.u.u_tex, 0);
+  gl.uniform4f(P_blit.u.u_src, 0, 0, 1, 1);
+  fsQuad();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (o.clearUndo) {
+    for (const e of undoStack) gl.deleteTexture(e.tex);
+    for (const e of redoStack) gl.deleteTexture(e.tex);
+    undoStack.length = 0; redoStack.length = 0; undoBytes = 0;
+  }
+  if (o.fit) fitView();
+  updateStat();
+  notifyDirty(); notifyView();
+  return true;
+}
+
+/* 底图：洋葱皮 + 参考层（DOM 侧按 montage 的层序合成成一张送来）。
+   引擎只把它垫在最底下显示，不写帧、不进撤销、不参与导出。 */
+async function setBackdrop(src) {
+  if (!src) { backOn = false; return false; }
+  const img = await decodeImageSource(src);
+  const sw = img.naturalWidth || img.width, sh = img.naturalHeight || img.height;
+  const cvs = document.createElement('canvas');
+  cvs.width = DW; cvs.height = DH;
+  cvs.getContext('2d').drawImage(img, 0, 0, sw, sh, 0, 0, DW, DH);
+  uploadCanvasTex(backTex, cvs, gl.LINEAR);
+  backOn = true;
+  return true;
+}
+function setBackdropAlpha(a) { backAlpha = Math.max(0, Math.min(1, Number(a) || 0)); }
+function hasBackdrop() { return backOn; }
+
+/* 换画幅：重建全部尺寸相关资源；两层已有内容按新画幅拉伸保留。
+   撤销栈 / 掩膜 / 变形会话全部作废 —— 跨画幅的快照没有意义。 */
+function setDocSize(w, h, opts) {
+  const o = Object.assign({ keepContent: true, fit: true }, opts || {});
+  w = Math.max(16, Math.round(w)); h = Math.max(16, Math.round(h));
+  if (w === DW && h === DH) return false;
+  if (drawing) endStroke();
+  if (xf.on) xfCancel();
+
+  const old = { bg: layerBank.bg.cur, fg: layerBank.fg.cur };
+  const oldTexes = [layerBank.bg.cur, layerBank.bg.alt, layerBank.fg.cur, layerBank.fg.alt,
+                    strokeTex, blurTmp, fxTmp, preScratch, maskTex, exportTex, floodTex,
+                    backTex, bucketA, bucketB, xfSrcTex, xfBackTex, previewTex].filter(Boolean);
+
+  DW = w; DH = h;
+  allocTextures();
+  xfSrcTex = null; xfBackTex = null; previewTex = null;
+  for (const e of undoStack) gl.deleteTexture(e.tex);
+  for (const e of redoStack) gl.deleteTexture(e.tex);
+  undoStack.length = 0; redoStack.length = 0; undoBytes = 0;
+  maskCv.width = DW; maskCv.height = DH;
+  floodCv.width = DW; floodCv.height = DH;
+  maskReset();
+  buildAnts();
+
+  if (o.keepContent) {
+    for (const id of LAYER_IDS) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, layerBank[id].cur, 0);
+      gl.disable(gl.SCISSOR_TEST); gl.disable(gl.BLEND);
+      gl.viewport(0, 0, DW, DH);
+      gl.useProgram(P_blit.p);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, old[id]);
+      gl.uniform1i(P_blit.u.u_tex, 0);
+      gl.uniform4f(P_blit.u.u_src, 0, 0, 1, 1);
+      fsQuad();
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  for (const t of oldTexes) gl.deleteTexture(t);
+
+  if (o.fit) fitView();
+  updateStat();
+  notifyDirty(); notifyView();
+  return true;
+}
+
+/* 清空全部图层（宿主"新建帧"用） */
+function clearAllLayers() {
+  for (const id of LAYER_IDS) { clearTex(layerBank[id].cur); clearTex(layerBank[id].alt); }
+  for (const e of undoStack) gl.deleteTexture(e.tex);
+  for (const e of redoStack) gl.deleteTexture(e.tex);
+  undoStack.length = 0; redoStack.length = 0; undoBytes = 0;
+  updateStat();
+  notifyDirty();
+}
+
+/* ---------- 视图 API（DOM 的缩放按钮 / 迷你地图用） ---------- */
+function getView() { return { scale: view.scale, x: view.x, y: view.y, dw: DW, dh: DH }; }
+function setView(v) {
+  if (v) {
+    if (typeof v.scale === 'number' && v.scale > 0) view.scale = v.scale;
+    if (typeof v.x === 'number') view.x = v.x;
+    if (typeof v.y === 'number') view.y = v.y;
+  }
+  notifyView();
+}
+/* 以某个客户端坐标为锚点缩放（滚轮/捏合/按钮都走这里，保证锚点行为一致） */
+function zoomAt(clientX, clientY, factor) {
+  const r = glc.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  const px = (clientX - r.left) * (glc.width / r.width);
+  const py = (clientY - r.top) * (glc.height / r.height);
+  const k = Math.max(0.02, Math.min(64, factor));
+  view.scale *= k;
+  view.x = px - (px - view.x) * k;
+  view.y = py - (py - view.y) * k;
+  notifyView();
+}
+function zoomCenter(factor) {
+  const r = glc.getBoundingClientRect();
+  zoomAt(r.left + r.width / 2, r.top + r.height / 2, factor);
+}
+/* 100%：一个文档像素 = 一个 CSS 像素（画布按 DPR 放大过，所以要乘回去） */
+function zoom100() {
+  const r = glc.getBoundingClientRect();
+  if (!r.width) return;
+  const dpr = glc.width / r.width;
+  zoomCenter(dpr / view.scale);
+}
+function panBy(dx, dy) { view.x += dx; view.y += dy; notifyView(); }
+
+/* ---- 常量表（DOM 前端的数据源）：色板 / 液化模式 / 动作条 ---- */
 const SWATCHES = ['#22262b','#5a6472','#a8b4c0','#ffffff','#b4553f','#c99a4e','#6f8f5a','#4a7a9b','#7a5d8f','#c98fa6'];
 const WARP_MODES = ['前推', '旋转', '收缩', '膨胀', '放大', '缩小'];
 const UI_ACTIONS = [
@@ -2375,179 +2773,6 @@ const UI_ACTIONS = [
   { id: 'clear',  name: '清空',     icon: 'M5 7h14 M9 7V5h6v2 M7 7l1 13h8l1-13' },
   { id: 'export', name: '导出 PNG', icon: 'M12 4v10 M8 10l4 4 4-4 M5 19h14' },
 ];
-
-const UI = { items: [] };   // 每帧重建的命中区
-
-function uiRoundRect(x, y, w, h, r) {
-  uctx.beginPath();
-  if (uctx.roundRect) uctx.roundRect(x, y, w, h, r);
-  else uctx.rect(x, y, w, h);
-}
-
-/* 图标沿用 BRUSHES 的 24×24 SVG path 数据，Path2D 直接描边 */
-function uiIcon(d, cx, cy, size, color) {
-  const p = new Path2D(d);
-  uctx.save();
-  uctx.translate(cx - size / 2, cy - size / 2);
-  uctx.scale(size / 24, size / 24);
-  uctx.strokeStyle = color;
-  uctx.lineWidth = 1.5;
-  uctx.lineCap = 'round'; uctx.lineJoin = 'round';
-  uctx.stroke(p);
-  uctx.restore();
-}
-
-function drawUI() {
-  const dpr = uic.width / Math.max(1, uic.clientWidth || 1);
-  const W = uic.clientWidth || Math.round(uic.width / dpr);
-  const H = uic.clientHeight || Math.round(uic.height / dpr);
-  uctx.setTransform(1, 0, 0, 1, 0, 0);
-  uctx.clearRect(0, 0, uic.width, uic.height);
-  uctx.scale(dpr, dpr);
-  UI.items.length = 0;
-
-  /* ---- 左侧工具条（三区布局时让位给左镜头面板） ---- */
-  const wsR = (window.__fabulaWorkspace && window.__fabulaWorkspace.rects) || null;
-  const th = themeTokens();
-  const vwView = window.__fabulaView;
-  if (vwView && vwView.view() !== 'timeline') {
-    const ws0 = window.__fabulaWorkspace;
-    if (ws0 && ws0.onFrame) ws0.onFrame(uctx, W, H);
-    return;
-  }
-  const bx = wsR ? wsR.canvas.x + 10 : 10;
-  const entries = [];
-  for (const t of TOOLS) {
-    if (t.gap) entries.push({ gap: true });
-    else entries.push({ kind: 'tool', id: t.id, icon: t.icon });
-  }
-  entries.push({ gap: true });
-  for (const a of UI_ACTIONS) entries.push({ kind: 'action', id: a.id, icon: a.icon });
-
-  const nBtn = entries.reduce((n, e) => n + (e.gap ? 0 : 1), 0);
-  const nGap = entries.reduce((n, e) => n + (e.gap ? 1 : 0), 0);
-  const panelH = nBtn * 42 + nGap * 9 + 6;
-
-  uiRoundRect(bx - 4, 6, 48, panelH, 12);
-  uctx.fillStyle = th.cardStrong; uctx.fill();
-  uctx.strokeStyle = th.border; uctx.lineWidth = 1; uctx.stroke();
-
-  let cy = 10;
-  for (const e of entries) {
-    if (e.gap) {
-      uctx.fillStyle = th.border;
-      uctx.fillRect(bx + 10, cy + 3, 20, 1);
-      cy += 9;
-      continue;
-    }
-    const active = e.kind === 'tool' && tool === e.id;
-    UI.items.push({ kind: e.kind, id: e.id, x: bx, y: cy, w: 40, h: 40 });
-    uiRoundRect(bx, cy, 40, 40, 9);
-    uctx.fillStyle = active ? th.accentA(0.22) : th.inputBg;
-    uctx.fill();
-    if (active) { uctx.strokeStyle = th.accentA(0.75); uctx.stroke(); }
-    uiIcon(e.icon, bx + 20, cy + 20, 18, active ? th.accent : th.textDim);
-    cy += 42;
-  }
-
-  /* ---- 液化模式子菜单（warp 选中时出现在工具条右侧）---- */
-  if (tool === 'warp') {
-    const mx = bx + 56;
-    uiRoundRect(mx - 4, 6, 74, WARP_MODES.length * 30 + 10, 10);
-    uctx.fillStyle = th.cardStrong; uctx.fill();
-    uctx.strokeStyle = th.border; uctx.stroke();
-    let my = 11;
-    WARP_MODES.forEach((m, i) => {
-      const on = P.warpMode === i;
-      UI.items.push({ kind: 'warpMode', i, x: mx, y: my, w: 66, h: 26 });
-      uiRoundRect(mx, my, 66, 26, 7);
-      uctx.fillStyle = on ? th.accentA(0.22) : th.inputBg;
-      uctx.fill();
-      if (on) { uctx.strokeStyle = th.accentA(0.7); uctx.stroke(); }
-      uctx.font = '11px ' + th.fonts;
-      uctx.fillStyle = on ? th.accent : th.textDim;
-      uctx.textAlign = 'center'; uctx.textBaseline = 'middle';
-      uctx.fillText(m, mx + 33, my + 14);
-      uctx.textAlign = 'left'; uctx.textBaseline = 'alphabetic';
-      my += 30;
-    });
-  }
-
-  /* ---- 底部：当前色 + 色板（三区布局时收到画布区底缘之上） ---- */
-  const sy = wsR ? (wsR.canvas.y + wsR.canvas.h - 34) : (H - 34);
-  let sx = bx;
-  uiRoundRect(sx, sy, 32, 28, 7);
-  uctx.fillStyle = 'rgb(' + Math.round(color[0] * 255) + ',' + Math.round(color[1] * 255) + ',' + Math.round(color[2] * 255) + ')';
-  uctx.fill();
-  uctx.strokeStyle = th.border; uctx.stroke();
-  sx += 40;
-  SWATCHES.forEach((h, i) => {
-    UI.items.push({ kind: 'swatch', i, x: sx, y: sy + 3, w: 22, h: 22 });
-    uiRoundRect(sx, sy + 3, 22, 22, 6);
-    uctx.fillStyle = h; uctx.fill();
-    uctx.strokeStyle = 'rgba(0,0,0,.18)'; uctx.stroke();
-    sx += 26;
-  });
-
-  /* ---- HUD：快捷键（色板上方两行）---- */
-  uctx.font = '11px ' + th.fonts;
-  uctx.fillStyle = th.textDim;
-  uctx.fillText('v2 · B 秀丽笔  P 铅笔  K 马克笔  G 水粉  A 喷枪  E 橡皮  F 油漆桶  S 涂抹  R 模糊  W 液化  L 套索  T 变形', bx, sy - 28);
-  uctx.fillText('[ ] 笔刷大小 · Ctrl+Z/Y 撤销重做 · 空格拖动平移 · 滚轮缩放 · Ctrl+A 全选 · Ctrl+Shift+I 反选 · 笔尾橡皮 · 笔侧键平移', bx, sy - 12);
-
-  /* 压感探针已并入右侧参数面板顶部（drawPanel） */
-
-  /* ---- 工作台层：左镜头面板 + 底时间轴骨架 ---- */
-  const ws = window.__fabulaWorkspace;
-  if (ws && ws.onFrame) ws.onFrame(uctx, W, H);
-}
-
-function uiHitTest(mx, my) {
-  for (let i = UI.items.length - 1; i >= 0; i--) {
-    const it = UI.items[i];
-    if (mx >= it.x && mx <= it.x + it.w && my >= it.y && my <= it.y + it.h) return it;
-  }
-  return null;
-}
-
-function uiPointerDown(e) {
-  const it = uiHitTest(e.clientX, e.clientY);
-  if (it) {
-    if (it.kind === 'tool') setTool(it.id);
-    else if (it.kind === 'action') {
-      if (it.id === 'undo') doUndo();
-      else if (it.id === 'redo') doRedo();
-      else if (it.id === 'white') fillLayer(1, 1, 1, 1);
-      else if (it.id === 'clear') clearLayer();
-      else if (it.id === 'export') exportPNG();
-    }
-    else if (it.kind === 'swatch') color = hexRgb(SWATCHES[it.i]);
-    else if (it.kind === 'warpMode') P.warpMode = it.i;
-    return true;
-  }
-  /* 工作台层：左镜头面板 / 底时间轴（命中即消费，不穿透到画布） */
-  const ws = window.__fabulaWorkspace;
-  if (ws && ws.onPointerDown && ws.onPointerDown(e.clientX, e.clientY)) return true;
-  /* 参数面板：滑条/开关/分段；面板空白也拦截（不穿透到画布）。抽屉收起时不拦 */
-  const vw1 = window.__fabulaView;
-  if ((!vw1 || vw1.paramsOpen()) && panelInRect(e.clientX, e.clientY)) {
-    panelPointerDown(e.clientX, e.clientY);
-    return true;
-  }
-  return false;
-}
-
-/* ============================================================
-   参数面板（自绘，右侧，可滚动）
-   —— 滑条 / 开关 / 分段全部 immediate mode，每帧重画；
-   滚轮在面板上滚动面板，在画布上缩放画布；
-   每个工具各自记住手调参数（toolParams 机制不变）。
-   ============================================================ */
-const PANEL = { w: 214, pad: 11, rowH: 33, sectH: 26, checkH: 22, segH: 30, probeH: 38 };
-const panelUI = { x: 0, y: 0, w: PANEL.w, h: 0, scrollY: 0, maxScroll: 0, items: [] };
-let uiDragSlider = null;
-/* 分组折叠状态（PS 式二级菜单）：默认只展开常用组，点组名展开/收起 */
-const uiFolded = new Set(['tilt2', 'tipshape', 'grain', 'dyn', 'pen']);
 
 function fmtPanelVal(r) {
   const v = r.obj[r.key], k = r.key;
@@ -2637,180 +2862,6 @@ function panelRows() {
     S('pressFlow', '压力→流量', 0, 1, 0.01);
   }
   return rows;
-}
-
-function rowH(r) {
-  if (r.kind === 'sect') return PANEL.sectH;
-  if (r.kind === 'probe') return PANEL.probeH;
-  if (r.kind === 'check') return PANEL.checkH;
-  if (r.kind === 'seg') return PANEL.segH;
-  if (r.kind === 'note') return 92;
-  return PANEL.rowH;
-}
-
-function drawPanel() {
-  /* 参数抽屉：默认收起（montage 形态：素材库 | 画板 + 时间轴），顶栏 ⚙ 展开 */
-  const vw0 = window.__fabulaView;
-  if (vw0 && !vw0.paramsOpen()) return;
-  const dpr = uic.width / Math.max(1, uic.clientWidth || 1);
-  const W = uic.clientWidth || Math.round(uic.width / dpr);
-  const H = uic.clientHeight || Math.round(uic.height / dpr);
-  panelUI.x = W - PANEL.w - 10;
-  /* 顶栏之下、时间轴之上（三区布局时）；无布局时退回原全屏定位 */
-  const wsRR = (window.__fabulaWorkspace && window.__fabulaWorkspace.rects) || null;
-  const topH = wsRR ? wsRR.top.h : 0;
-  const tlY = wsRR ? wsRR.timeline.y : H;
-  panelUI.y = topH + 10;
-  panelUI.h = Math.max(120, tlY - panelUI.y - 10);
-  const rows = panelRows();
-
-  let ch = PANEL.pad;
-  for (const r of rows) ch += rowH(r);
-  ch += PANEL.pad;
-  panelUI.maxScroll = Math.max(0, ch - panelUI.h);
-  panelUI.scrollY = Math.max(0, Math.min(panelUI.maxScroll, panelUI.scrollY));
-  panelUI.items.length = 0;
-
-  const th = themeTokens();
-  uiRoundRect(panelUI.x, panelUI.y, panelUI.w, panelUI.h, 12);
-  uctx.fillStyle = th.cardStrong; uctx.fill();
-  uctx.strokeStyle = th.border; uctx.lineWidth = 1; uctx.stroke();
-
-  uctx.save();
-  uiRoundRect(panelUI.x, panelUI.y, panelUI.w, panelUI.h, 12);
-  uctx.clip();
-  uctx.translate(0, -panelUI.scrollY);
-
-  const x = panelUI.x + PANEL.pad;
-  const w = panelUI.w - PANEL.pad * 2;
-  let yy = panelUI.y + PANEL.pad;
-
-  let curGroup = null;
-  for (const r of rows) {
-    if (r.kind === 'sect') {
-      /* PS 式二级菜单：组名可点击展开/收起（▸ 收起 / ▾ 展开） */
-      curGroup = r.group;
-      const folded = uiFolded.has(r.group);
-      panelUI.items.push({ kind: 'sect', group: r.group, x: panelUI.x, y: yy - panelUI.scrollY, w: panelUI.w, h: PANEL.sectH - 4 });
-      uctx.font = '10px ' + th.fonts;
-      uctx.fillStyle = th.accentA(0.9);
-      uctx.fillText((folded ? '▸ ' : '▾ ') + r.title, x, yy + 12);
-      uctx.fillStyle = th.border;
-      uctx.fillRect(x, yy + 17, w, 1);
-      yy += PANEL.sectH;
-      continue;
-    }
-    if (curGroup && uiFolded.has(curGroup)) continue;   /* 组收起：整组跳过 */
-    if (r.kind === 'probe') {
-      /* 压感探针：拿笔划一下就知道板子在报什么 */
-      uctx.font = '11px ui-monospace, Consolas, monospace';
-      const kind = PEN.lastType === 'pen' ? '数位板' : (PEN.lastType === 'touch' ? '触摸' : (PEN.lastType === '—' ? '待输入' : '鼠标'));
-      let mode;
-      if (PEN.mode === 1) mode = '强制压力';
-      else if (PEN.mode === 2) mode = '速度驱动';
-      else if (PEN.pressureSeen === false) mode = '速度·自动降级';
-      else if (PEN.pressureSeen === true) mode = '压力·自动';
-      else mode = '压力·探测中';
-      uctx.fillStyle = th.textDim;
-      uctx.fillText((TOOL_BY_ID[tool] ? TOOL_BY_ID[tool].name : tool) + ' · ' + Math.round(P.size) + 'px · '
-        + kind + '/' + mode + (PEN.sawTilt ? '·倾斜' : ''), x, yy + 11);
-      uctx.fillStyle = th.inputBg;
-      uctx.fillRect(x, yy + 16, w, 5);
-      uctx.fillStyle = th.accent;
-      uctx.fillRect(x, yy + 16, Math.round(w * clamp01(PEN.lastShapeP)), 5);
-      uctx.fillText('压感 ' + PEN.lastShapeP.toFixed(2) + ' · 倾斜 ' + Math.round(PEN.tilt * 76) + '° · '
-        + fpsVal + ' FPS · 撤销 ' + undoStack.length + ' 步', x, yy + 33);
-    } else if (r.kind === 'slider') {
-      const v = r.obj[r.key];
-      const t = clamp01((v - r.min) / (r.max - r.min));
-      uctx.font = '11px ' + th.fonts;
-      uctx.fillStyle = th.textDim;
-      uctx.fillText(r.label, x, yy + 11);
-      uctx.fillStyle = th.accentA(0.95);
-      uctx.textAlign = 'right';
-      uctx.fillText(fmtPanelVal(r), x + w, yy + 11);
-      uctx.textAlign = 'left';
-      const ty = yy + 20;
-      uiRoundRect(x, ty, w, 4, 2);
-      uctx.fillStyle = th.inputBg; uctx.fill();
-      uiRoundRect(x, ty, Math.max(2, w * t), 4, 2);
-      uctx.fillStyle = th.accentA(0.45); uctx.fill();
-      uctx.beginPath();
-      uctx.arc(x + w * t, ty + 2, 5, 0, Math.PI * 2);
-      uctx.fillStyle = th.accent; uctx.fill();
-      panelUI.items.push({ kind: 'slider', r, x: panelUI.x + 4, y: yy - panelUI.scrollY, w: panelUI.w - 8, h: 30, tx: x, tw: w });
-    } else if (r.kind === 'check') {
-      const on = !!r.obj[r.key];
-      panelUI.items.push({ kind: 'check', r, x: panelUI.x + 4, y: yy - panelUI.scrollY, w: panelUI.w - 8, h: PANEL.checkH });
-      uctx.strokeStyle = on ? th.accent : th.textDim;
-      uctx.lineWidth = 1.2;
-      uctx.strokeRect(x + 0.5, yy + 4.5, 13, 13);
-      if (on) {
-        uctx.beginPath();
-        uctx.moveTo(x + 3, yy + 11); uctx.lineTo(x + 6.5, yy + 14.5); uctx.lineTo(x + 12, yy + 6);
-        uctx.stroke();
-      }
-      uctx.font = '12px ' + th.fonts;
-      uctx.fillStyle = on ? th.text : th.textDim;
-      uctx.fillText(r.label, x + 20, yy + 15);
-    } else if (r.kind === 'seg') {
-      const bw = w / r.items.length;
-      r.items.forEach((it, i) => {
-        const on = r.obj[r.key] === i;
-        const bxx = x + i * bw;
-        panelUI.items.push({ kind: 'seg', r, idx: i, x: bxx, y: yy - panelUI.scrollY, w: bw, h: 24 });
-        uiRoundRect(bxx, yy, bw - 2, 24, 6);
-        uctx.fillStyle = on ? th.accentA(0.22) : th.inputBg;
-        uctx.fill();
-        if (on) { uctx.strokeStyle = th.accentA(0.7); uctx.stroke(); }
-        uctx.font = '11px ' + th.fonts;
-        uctx.fillStyle = on ? th.accent : th.textDim;
-        uctx.textAlign = 'center';
-        uctx.fillText(it, bxx + bw / 2 - 1, yy + 15);
-        uctx.textAlign = 'left';
-      });
-    } else if (r.kind === 'note') {
-      uctx.font = '11px ' + th.fonts;
-      uctx.fillStyle = th.textDim;
-      String(r.text).split('\n').forEach((ln, i) => uctx.fillText(ln, x, yy + 13 + i * 15));
-    }
-    yy += rowH(r);
-  }
-  uctx.restore();
-}
-
-function panelPointerDown(mx, my) {
-  for (const it of panelUI.items) {
-    if (mx >= it.x && mx <= it.x + it.w && my >= it.y && my <= it.y + it.h) {
-      if (it.kind === 'slider') {
-        uiDragSlider = it;
-        panelDragMove(mx);
-        return true;
-      }
-      if (it.kind === 'check') { it.r.obj[it.r.key] = !it.r.obj[it.r.key]; return true; }
-      if (it.kind === 'seg') { it.r.obj[it.r.key] = it.idx; return true; }
-      if (it.kind === 'sect') {
-        if (uiFolded.has(it.group)) uiFolded.delete(it.group);
-        else uiFolded.add(it.group);
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-function panelInRect(mx, my) {
-  return mx >= panelUI.x && mx <= panelUI.x + panelUI.w
-      && my >= panelUI.y && my <= panelUI.y + panelUI.h;
-}
-
-function panelDragMove(mx) {
-  const it = uiDragSlider;
-  if (!it) return;
-  const t = clamp01((mx - it.tx) / it.tw);
-  let v = it.r.min + t * (it.r.max - it.r.min);
-  v = Math.round(v / it.r.step) * it.r.step;
-  it.r.obj[it.r.key] = Math.max(it.r.min, Math.min(it.r.max, v));
 }
 
 /* ============================================================
@@ -2906,35 +2957,46 @@ function hexRgb(h) {
   const n = parseInt(h.slice(1), 16);
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
-function updateStat() { /* 状态栏已由自绘 HUD 取代；保留调用点以减少对内核的侵入 */ }
+function updateStat() { /* 状态栏由 DOM 前端负责；空实现，只为不打扰内核里成片的调用点 */ }
 
-/* 状态栏的笔输入指示：直接告诉用户"现在用的是压力还是速度"，
-   省得在板子上摸索半天不知道为什么线宽没反应 */
-function updatePenStat() { /* 同上：压感指示移入自绘探针（右下角） */ }
+/* 图层内容变动（落笔 / 工具操作 / 撤销重做 / 载帧）→ 通知宿主：
+   帧标脏、存盘节流、缩略图刷新都挂在这上面 */
+function notifyDirty() {
+  try { const cb = window.__fabulaEngine && window.__fabulaEngine.onDirty; if (cb) cb(layer); } catch (_) {}
+}
+/* 视图变动（缩放 / 平移 / 换画幅）→ 通知宿主：百分比标签、迷你地图 */
+function notifyView() {
+  try {
+    const cb = window.__fabulaEngine && window.__fabulaEngine.onView;
+    if (cb) cb({ scale: view.scale, x: view.x, y: view.y, dw: DW, dh: DH });
+  } catch (_) {}
+}
+function notifySel() {
+  try {
+    const cb = window.__fabulaEngine && window.__fabulaEngine.onSel;
+    if (cb) cb(!!selActive());
+  } catch (_) {}
+}
 
 /* ============================================================
    呈现
    ============================================================ */
-/* 画布底色（paper）——montage 语义：纯预览层，不影响导出/帧文件。
-   由 DOM 设置模块（dom/paper.js）经 window.__fabulaPaper 提供；无 DOM 时用默认米白。 */
-const PAPER_DEFAULT = '#f5f0ea';
-let paperHexCache = PAPER_DEFAULT;
-let paperRGB = hexRgb(PAPER_DEFAULT);
-function syncPaper() {
-  const hex = (window.__fabulaPaper && window.__fabulaPaper.get && window.__fabulaPaper.get()) || PAPER_DEFAULT;
-  if (hex !== paperHexCache) { paperHexCache = hex; paperRGB = hexRgb(hex); }
-}
-
 /* 显示管线的 uniform 绑定。present() 和调试钩子 readPreview() 共用这一份 ——
    各写一份的话，验证器测的就不是屏幕上真正在跑的那条路径了。 */
 function bindDisplay(vw, vh, scale, ox, oy) {
   gl.useProgram(P_disp.p);
-  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, paintCur);
-  gl.uniform1i(P_disp.u.u_layer, 0);
-  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, strokeTex);
-  gl.uniform1i(P_disp.u.u_stroke, 1);
-  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, maskTex);
-  gl.uniform1i(P_disp.u.u_mask, 2);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, layerBank.bg.cur);
+  gl.uniform1i(P_disp.u.u_bot, 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, layerBank.fg.cur);
+  gl.uniform1i(P_disp.u.u_top, 1);
+  gl.uniform1f(P_disp.u.u_active, layer === 'fg' ? 1 : 0);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, backTex);
+  gl.uniform1i(P_disp.u.u_back, 2);
+  gl.uniform1f(P_disp.u.u_backA, backOn ? backAlpha : 0);
+  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, strokeTex);
+  gl.uniform1i(P_disp.u.u_stroke, 3);
+  gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, maskTex);
+  gl.uniform1i(P_disp.u.u_mask, 4);
   gl.uniform4f(P_disp.u.u_color, color[0], color[1], color[2], 1);
   gl.uniform1f(P_disp.u.u_opacity, P.opacity);
   gl.uniform1f(P_disp.u.u_erase, erasing() ? 1 : 0);
@@ -2944,14 +3006,12 @@ function bindDisplay(vw, vh, scale, ox, oy) {
   gl.uniform2f(P_disp.u.u_viewRes, vw, vh);
   gl.uniform2f(P_disp.u.u_docRes, DW, DH);
   gl.uniform3f(P_disp.u.u_view, scale, ox, oy);
-  syncPaper();
-  gl.uniform3f(P_disp.u.u_paper, paperRGB[0], paperRGB[1], paperRGB[2]);
   gl.uniform1f(P_disp.u.u_xfOn, xf.on ? 1 : 0);
   if (xf.on) {
-    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, xfBackTex);
-    gl.uniform1i(P_disp.u.u_xfBack, 3);
-    gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, xfSrcTex);
-    gl.uniform1i(P_disp.u.u_xfSrc, 4);
+    gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, xfBackTex);
+    gl.uniform1i(P_disp.u.u_xfBack, 5);
+    gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, xfSrcTex);
+    gl.uniform1i(P_disp.u.u_xfSrc, 6);
     const inv = xfInv();
     gl.uniformMatrix2fv(P_disp.u.u_xfLin, false, inv.L);
     gl.uniform2f(P_disp.u.u_xfOff, inv.off[0], inv.off[1]);
@@ -3064,8 +3124,7 @@ function drawOverlay() {
   octx.scale(dpr, dpr);
 
   /* 播放/暂停态：ovc 画布区被播放预览接管 —— 只跳过"编辑期覆盖层"
-     （蚂蚁线/变形手柄/套索/光标），uic 层的 drawUI/drawPanel 仍每帧重画。
-     这里若直接 return，左面板与时间轴会冻结在接管前的那一帧（实测踩过）。 */
+     （参考层/蚂蚁线/变形手柄/套索/光标），DOM 面板不受影响。 */
   let playbackOwns = false;
   { const pb = window.__fabulaPlayback;
     if (pb && pb.active && pb.active() && pb.draw && pb.draw(octx, ovc.clientWidth, ovc.clientHeight)) {
@@ -3099,6 +3158,27 @@ function drawOverlay() {
       octx.setLineDash([]);
     }
 
+    /* 形状工具预览（直线 / 矩形）：与抬笔落墨共用 shapePoints ——
+       Shift 的 45° 吸附 / 正方形吸附在预览里就能看见 */
+    if (shapeCur) {
+      const sp = shapePoints(shapeCur);
+      octx.save();
+      octx.beginPath();
+      octx.moveTo(X(sp[0].x), Y(sp[0].y));
+      for (let i = 1; i < sp.length; i++) octx.lineTo(X(sp[i].x), Y(sp[i].y));
+      octx.lineJoin = 'round';
+      const lw = Math.max(1, P.size * S);
+      if (erasing()) {
+        octx.lineWidth = lw + 2; octx.strokeStyle = 'rgba(0,0,0,.4)'; octx.stroke();
+        octx.lineWidth = lw; octx.strokeStyle = 'rgba(255,255,255,.9)'; octx.stroke();
+      } else {
+        octx.lineWidth = lw;
+        octx.strokeStyle = 'rgba(' + color.map(c => Math.round(c * 255)).join(',') + ',.85)';
+        octx.stroke();
+      }
+      octx.restore();
+    }
+
     if (lastCursor.inside && !panActive && !xf.on) {
     /* 光标 = 实际笔刷形状：压扁比 / 倾角加宽与转向 / 扁笔尖锁定角全部实时反映，
        倾斜笔杆时光标会肉眼可见地变形——不再是一个看不出任何信息的圆圈 */
@@ -3116,8 +3196,7 @@ function drawOverlay() {
   }
   } /* end if (!playbackOwns) */
 
-  /* 界面已全部 DOM 化（montage 前端壳）：自绘工具条/色板/参数面板停用。
-     drawUI/drawPanel 函数体保留待整体删除，这里不再调用。 */
+  /* 自绘 UI 已全部移除：工具条/色板/参数面板由 host DOM 渲染 */
 }
 
 /* ============================================================
@@ -3207,7 +3286,7 @@ function frame(ts) {
    载入 = 整幅替换当前图层并清撤销栈（每镜头是独立文档的语义）。 */
 /* 偏好中的压感默认值（统一偏好存储，设置面板可调）——启动套用。
    参数面板里的改动是会话级（切工具/重启回到这里的默认），与 montage 的同语义。 */
-(function applyPenPrefs() {
+function applyPenPrefs() {
   try {
     const p = window.__fabulaPrefs;
     if (!p) return;
@@ -3217,28 +3296,60 @@ function frame(ts) {
     const hi = +p.get('penPMax'); if (hi > 0) PEN.pMax = hi;
     const sr = +p.get('penSpeedRef'); if (sr > 0) PEN.speedRef = sr;
   } catch (_) {}
-})();
+}
+applyPenPrefs();
 
 window.__fabulaEngine = {
-  /* ---- DOM UI 桥（montage 前端壳）：参数定义的唯一来源仍在引擎内 ---- */
+  /* ================= DOM 前端桥 =================
+     引擎是"画布区"的唯一主人：笔迹/工具/图层/选区/视图全在这一侧；
+     montage 前端负责业务（板/帧/时间轴/分镜表/存储），双方只经这个对象说话。
+     onXxx 回调由前端赋值，引擎在对应事件发生时调用。 */
+  /* ---- 数据源（工具列/参数面板都由这里生成，前端不重复定义） ---- */
   TOOLS,
   UI_ACTIONS,
+  SWATCHES,
+  BRUSHES,    // 笔刷预设（DOM 的笔刷条/参数面板从这里渲染）
+  P,
+  PEN,        // 压感设备参数（设置面板直接读写，立即生效）
+  panelRows: () => panelRows(),
+  fmtPanelVal,
+
+  /* ---- 工具 / 参数 / 颜色 ---- */
   tool: () => tool,
   setTool: (id) => setTool(id),
   onToolChange: null,                     // DOM 层赋值；setTool 结束时回调
+  getColor: () => color.slice(),
+  setColor: (h) => { color = hexRgb(h); notifyColor(); },
+  onColor: null,                          // 取色/换色时回调（色板 UI 同步）
+  getParams: () => Object.assign({}, P),
+  setParam(k, v) { if (k in P) P[k] = v; if (k in PEN) PEN[k] = v; },
+
+  /* ---- 图层：bg = 底色层，fg = 线稿层（montage 双 canvas 的等价物） ---- */
+  LAYER_IDS,
+  layer: () => layer,
+  getLayer,
+  setLayer: (id) => setLayer(id),
+  onLayerChange: null,
+  white: (id) => withLayer(id || 'bg', () => fillLayer(1, 1, 1, 1)),
+  clear: (id) => withLayer(id || layer, () => clearLayer()),
+
+  /* ---- 撤销 ---- */
   undo: () => doUndo(),
   redo: () => doRedo(),
-  white: () => fillLayer(1, 1, 1, 1),
-  clear: () => clearLayer(),
-  fit: () => fitView(),
-  zoom100: () => { const w = glc.width, h = glc.height; view.scale = 1; view.x = (w - DW) / 2; view.y = (h - DH) / 2; },
-  getColor: () => color.slice(),
-  setColor: (h) => { color = hexRgb(h); },
-  SWATCHES,
-  panelRows: () => panelRows(),
-  fmtPanelVal,
-  P,
-  PEN,        // 压感设备参数（设置面板直接读写，立即生效）
+  canUndo: () => undoStack.length > 0,
+  canRedo: () => redoStack.length > 0,
+  clearHistory() {
+    for (const e of undoStack) gl.deleteTexture(e.tex);
+    for (const e of redoStack) gl.deleteTexture(e.tex);
+    undoStack.length = 0; redoStack.length = 0; undoBytes = 0;
+    updateStat();
+  },
+  /* 强制收笔：宿主在存盘/切帧前调用，把"画到一半"的笔画落定入撤销栈 */
+  commitStroke() { if (drawing) endStroke(); },
+  /* 重新套用统一偏好里的压感/平滑（设置面板改动后即时生效） */
+  applyPenPrefs,
+  /* 空格/抓手：由宿主（montage 的全局键盘）驱动，引擎不抢键盘 */
+  setPanMode(on) { spaceDown = !!on; },
   /* 重置某支笔刷：丢弃按笔记忆与会话缓存，重铺出厂预设（笔刷设置弹窗的「重置此笔刷」用） */
   resetBrush(id) {
     const bpId = id || tool;
@@ -3254,74 +3365,54 @@ window.__fabulaEngine = {
     delete toolParams[bpId];
     if (bpId === tool) applyBrush(tool);
   },
-  /* 当前图层导出为 PNG dataURL（白底合成，与 exportPNG 同一读回逻辑，不触发下载） */
-  exportLayerPNG() {
-    const buf = readLayerRGBA8();
-    const out = document.createElement('canvas');
-    out.width = DW; out.height = DH;
-    const o2 = out.getContext('2d');
-    const img = o2.createImageData(DW, DH);
-    for (let y = 0; y < DH; y++) {
-      const sy = DH - 1 - y;
-      for (let x = 0; x < DW; x++) {
-        const si = (sy * DW + x) * 4, di = (y * DW + x) * 4;
-        const a = buf[si + 3] / 255;
-        img.data[di] = Math.round(buf[si] + (1 - a) * 255);
-        img.data[di + 1] = Math.round(buf[si + 1] + (1 - a) * 255);
-        img.data[di + 2] = Math.round(buf[si + 2] + (1 - a) * 255);
-        img.data[di + 3] = 255;
-      }
-    }
-    o2.putImageData(img, 0, 0);
-    return out.toDataURL('image/png');
-  },
-  /* 载入图片（URL）：contain 居中画到文档画幅，整幅替换图层；撤销栈清空 */
-  loadLayerFromURL(url) {
-    const img = new Image();
-    img.onload = () => {
-      const cv = document.createElement('canvas');
-      cv.width = DW; cv.height = DH;
-      const c2 = cv.getContext('2d');
-      const s = Math.min(DW / img.width, DH / img.height);
-      const w2 = img.width * s, h2 = img.height * s;
-      c2.drawImage(img, (DW - w2) / 2, (DH - h2) / 2, w2, h2);
-      const t = mkTex(DW, DH, gl.LINEAR);
-      gl.bindTexture(gl.TEXTURE_2D, t);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, cv);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-      if (beginPass(paintCur)) {
-        gl.useProgram(P_blit.p);
-        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, t);
-        gl.uniform1i(P_blit.u.u_tex, 0);
-        gl.uniform4f(P_blit.u.u_src, 0, 0, 1, 1);
-        fsQuad();
-      }
-      gl.deleteTexture(t);
-      clearTex(strokeTex);
-      for (const e of undoStack) gl.deleteTexture(e.tex);
-      for (const e of redoStack) gl.deleteTexture(e.tex);
-      undoStack.length = 0; redoStack.length = 0; undoBytes = 0;
-      strokeInfo.dirty = null;
-      maskReset();
-      fitView();
-      updateStat();
-    };
-    img.src = url;
-  },
-  /* 顶栏"导出"按钮入口（复用既有导出管线） */
-  exportPNG() { exportPNG(); },
-  /* 清空画布（新空镜头开始画）；同样清撤销栈，避免跨镜头撤销 */
+  /* ================= 帧 IO（montage 语义：帧文件 = 透明底 PNG） ================= */
+  /* 载入位图到指定层（默认 fg 线稿层，与 montage 的"帧文件全进线稿层"一致） */
+  loadImage: (src, opts) => loadImageToLayer(src, opts),
+  /* 整帧导出：bg+fg 合成，透明底（不含底图/洋葱皮） */
+  exportDataURL: () => exportDataURL(),
+  exportBlob: () => exportBlob(),
+  /* 当前图层的透明底 dataURL（单层调试用） */
+  exportLayerPNG() { return rgbaToCanvas(readLayerRGBA8(), DW, DH).toDataURL('image/png'); },
+  exportPNG: () => exportPNG(),
+  loadLayerFromURL(url) { return loadImageToLayer(url, { layer: 'fg', mode: 'contain', clearUndo: true, fit: true }); },
+
+  /* ================= 底图：洋葱皮 + 参考层 ================= */
+  setBackdrop, setBackdropAlpha, hasBackdrop,
+
+  /* ================= 文档（画幅） ================= */
+  docSize: () => [DW, DH],
+  setDocSize: (w, h, o) => setDocSize(w, h, o),
+  clearAllLayers,
+  /* 清空画布（新空镜头开始画）；跨文档撤销没有意义，一并清掉 */
   clearForShot() {
-    clearTex(paintCur); clearTex(paintAlt);
+    clearAllLayers();
     clearTex(strokeTex); clearTex(fxTmp);
-    for (const e of undoStack) gl.deleteTexture(e.tex);
-    for (const e of redoStack) gl.deleteTexture(e.tex);
-    undoStack.length = 0; redoStack.length = 0; undoBytes = 0;
     strokeInfo.dirty = null;
     maskReset();
     updateStat();
+    notifyView();
   },
+
+  /* ================= 视图 ================= */
+  fit: () => fitView(),
+  zoom100: () => zoom100(),
+  zoomAt, zoomCenter, panBy, getView, setView,
+  onView: null,
+
+  /* ================= 选区 ================= */
+  onSel: null,
+  hasSelection: () => selActive(),
+  selectAll: () => maskReset(),
+  deselect: () => deselectAll(),
+  invertSelection: () => invertMask(),
+  fillSelection: () => fillLayer(color[0], color[1], color[2], 1),
+  eraseSelection: () => fillLayer(0, 0, 0, 0),
+  transformSelection: () => xfBegin(),
+  commitTransform: () => xfCommit(),
+  cancelTransform: () => xfCancel(),
+
+  /* ================= 状态 ================= */
+  onDirty: null,
 };
 
 /* 调试钩子：便于自动化验证和外部观察内部状态，不影响正常使用 */

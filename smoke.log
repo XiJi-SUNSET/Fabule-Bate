@@ -1,0 +1,9 @@
+[smoke] demo run: {"steps":["create","loadImage","stroke","writeShotImage"],"root":"C:\\Users\\Sunset\\AppData\\Local\\Temp\\fabula-demo-2SOyLf","imported":1,"asset":"assets/image/as_a32d8d71.png","stroke":{"canUndo":true},"shot":"sh_66fc6e0e","shots":["sh_66fc6e0e:shots/sh_66fc6e0e.png"]}
+[smoke] status: {"engine":{"tool":"pen","doc":[1280,720],"canUndo":true,"canRedo":false,"hasBackdrop":true,"view":{"scale":0.862,"x":75,"y":133},"stroke":{"dabs":696,"points":25,"undo":1}},"board":{"idle":true,"dirty":false,"cur":null,"tool":"brush"},"project":{"root":"C:\\Users\\Sunset\\AppData\\Local\\Temp\\fabula-demo-2SOyLf","name":"冒烟演示","shots":1,"assets":1},"err":""}
+[smoke] export: {"seq":{"ok":true,"dir":"C:/Users/Sunset/AppData/Local/Temp/fabula-exp-DLSH26","count":1,"map":[{"file":"01.png","shotId":"sh_66fc6e0e","no":1}]},"json":{"ok":true,"path":"C:/Users/Sunset/AppData/Local/Temp/fabula-exp-DLSH26/backup.json"},"png":{"ok":true,"path":"C:/Users/Sunset/AppData/Local/Temp/fabula-exp-DLSH26/story.png"},"pdf":{"ok":true,"path":"C:/Users/Sunset/AppData/Local/Temp/fabula-exp-DLSH26/story.pdf"}}
+[smoke] export files: 01.png,backup.json,story.pdf,story.png
+[smoke] loop status: {"engine":{"tool":"pen","doc":[1280,720],"canUndo":true,"canRedo":false,"hasBackdrop":true,"view":{"scale":0.862,"x":75,"y":133},"stroke":{"dabs":696,"points":25,"undo":1}},"board":{"idle":true,"dirty":false,"cur":null,"tool":"brush"},"project":{"root":"C:\\Users\\Sunset\\AppData\\Local\\Temp\\fabula-demo-2SOyLf","name":"冒烟演示","shots":1,"assets":1},"err":""}
+[smoke] brush: clicked:brush-chip active
+[smoke] view set to sheet
+[smoke] screenshot saved
+[smoke] window alive, exiting 0

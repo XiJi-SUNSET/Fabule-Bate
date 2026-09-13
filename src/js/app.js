@@ -61,11 +61,12 @@
       if (!p) {
         hint.style.display = '';
         hint.textContent = '未打开工程 —— 点左上「打开工程文件夹」';
-        $('board-canvas').style.cursor = 'not-allowed';
+        if (MTG.board.setIdle) MTG.board.setIdle(true);        // 画板置灰：光标提示不可画
         MTG.ui.syncShotPanel();
         return;
       }
       const b = MTG.findBoard(st.currentBoardId);
+      if (MTG.board.setIdle) MTG.board.setIdle(!b);
       hint.style.display = b ? 'none' : '';
       const s = MTG.board.shotAt(st.playhead);
       hint.textContent = s && !s.boardId
@@ -202,6 +203,16 @@
       else MTG.timeline.render();
       const grp = document.getElementById('view-switch');
       if (grp) grp.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+      /* 画板从隐藏切回：引擎的画布尺寸取自 clientWidth，隐藏期间没法量。
+         回到时间轴视图时补一次尺寸重建；画布此前从未量过（首个显示帧）才顺带适配窗口。 */
+      if (v === 'timeline') {
+        requestAnimationFrame(() => {
+          const glc = document.getElementById('gl');
+          const neverSized = !glc || glc.width <= 1;
+          window.dispatchEvent(new Event('resize'));
+          if (neverSized && MTG.board && MTG.board.fitView) MTG.board.fitView();
+        });
+      }
     }
   };
 
@@ -374,7 +385,7 @@
 
     /* 参考层 */
     $('ref-show').onchange = e => { MTG.board.showRef = e.target.checked; MTG.board.paint(); };
-    $('ref-clear').onclick = () => { MTG.board.clearRef(); MTG.toast('已清除参考层'); };
+    $('ref-clear').onclick = () => MTG.board.clearRef();
 
     /* 画幅 */
     const sizeSel = $('board-size'), custom = $('size-custom');
@@ -658,7 +669,11 @@
     MTG.picker.onChange = hex => MTG.ui.syncColor(hex);
     MTG.picker.set(MTG.state.color);
     MTG.picker.renderSwatches();
-    MTG.board.init($('board-canvas'));
+    MTG.board.init();
+    /* 引擎启动时还没读到统一偏好（settings 在其后加载），这里补套一次 */
+    if (window.__fabulaEngine && window.__fabulaEngine.applyPenPrefs) {
+      window.__fabulaEngine.applyPenPrefs();
+    }
     MTG.timeline.init();
     MTG.sheet.init();
     MTG.story.init();

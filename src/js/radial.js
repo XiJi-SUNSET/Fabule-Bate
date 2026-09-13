@@ -50,7 +50,7 @@
       window.addEventListener('blur', () => { if (Rad.open) Rad.close(false); });
 
       /* 右键呼出（可选）：画布上按住右键 */
-      const cv = document.getElementById('board-canvas');
+      const cv = document.getElementById('ov');
       if (cv) {
         cv.addEventListener('pointerdown', e => {
           if (e.button !== 2 || !MTG.settings.get('radialRight')) return;

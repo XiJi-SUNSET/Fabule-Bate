@@ -32,8 +32,8 @@
     /* 轮盘 */
     radialKey: 'V',          // 呼出键（按住）
     radialRight: false,      // 右键也能呼出
-    radial: ['brush.pen', 'brush.brushPen', 'brush.pencil', 'brush.marker',
-             'brush.watercolor', 'brush.airbrush', 'tool.eraser', 'tool.lasso']
+    radial: ['brush.pen', 'brush.pencil', 'brush.marker', 'brush.gouache',
+             'brush.airbrush', 'tool.eraser', 'tool.lasso', 'tool.hand']
   };
 
   const svg = p => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" '
@@ -499,6 +499,26 @@
       }
     }
   });
+
+  /* ── 统一偏好桥：绘画引擎（engine/paint.js）与设置面板共用一份 localStorage ──
+     引擎只认 window.__fabulaPrefs.get/set，键名与设置面板不同名，在这里翻译：
+     撤销深度 ← maxUndo；笔压曲线/抖动修正 ← pressureCurve/stabilizer；
+     笔刷预设（brushParams）与引擎同名直通。 */
+  const PREF_KEYS = { undoSteps: 'maxUndo', brushParams: 'brushParams' };
+  const CURVE_MAP = { soft: 0.6, linear: 0.9, hard: 1.35 };
+  window.__fabulaPrefs = {
+    get(k) {
+      if (k === 'penCurve') return CURVE_MAP[S.get('pressureCurve')] || CURVE_MAP.linear;
+      if (k === 'penSmooth') {
+        const v = +S.get('stabilizer');
+        return isFinite(v) ? Math.min(0.9, Math.max(0, v / 100)) : undefined;
+      }
+      return S.get(PREF_KEYS[k] || k);
+    },
+    set(k, v) {
+      S.set(PREF_KEYS[k] || k, v);
+    },
+  };
 
   S.init();
 })();

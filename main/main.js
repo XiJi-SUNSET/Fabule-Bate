@@ -4,6 +4,21 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const store = require('./projectStore.js');
 
+/* 冒烟日志落盘：Windows GUI 进程的 stdout 在终端拿不到（console.log 静默丢失），
+   冒烟模式下把 console 输出镜像一份到 smoke.log，跑完直接读文件核对 */
+if (process.argv.some((a) => a === '--smoke' || a.startsWith('--smoke-'))) {
+  const fsx = require('node:fs');
+  const LOG = path.join(__dirname, '..', 'smoke.log');
+  try { fsx.writeFileSync(LOG, ''); } catch (_) {}
+  const mirror = (fn) => (...a) => {
+    const line = a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ') + '\n';
+    try { fsx.appendFileSync(LOG, line); } catch (_) {}
+    fn(...a);
+  };
+  console.log = mirror(console.log.bind(console));
+  console.error = mirror(console.error.bind(console));
+}
+
 /* 渲染端代码从 src/ 以 ESM 加载。file:// 协议下 <script type=module> 的 import
    会被 CORS 拦下，所以注册 fabula:// 特权协议映射磁盘目录 */
 const SRC_ROOT = path.normalize(path.join(__dirname, '..', 'src'));
@@ -44,7 +59,10 @@ async function serveProjectFile(u) {
   if (!cur.root) return new Response('no project', { status: 404 });
   const abs = safeMappedFile(cur.root, u.pathname);
   if (!abs) return new Response('forbidden', { status: 403 });
-  return respondFile(abs);
+  const resp = await respondFile(abs);
+  /* fabula://app 页面 fetch fabula://proj 资源属跨源：补 CORS 头（渲染端 fetch 直读工程文件用） */
+  resp.headers.set('Access-Control-Allow-Origin', '*');
+  return resp;
 }
 
 function createWindow() {
@@ -177,7 +195,14 @@ function createWindow() {
           console.log('[smoke-eval]', typeof r === 'object' ? JSON.stringify(r) : r);
         }
         if (process.argv.includes('--smoke-brush')) {
-          await win.webContents.executeJavaScript('document.getElementById("btn-brush-set").click()');
+          /* 笔刷 UI 入口随版本演进：优先旧 id，回退到笔刷清单里的第一个按钮 */
+          const r = await win.webContents.executeJavaScript(
+            '(function(){ var el = document.getElementById("btn-brush-set")'
+            + ' || document.querySelector("#brush-list button")'
+            + ' || document.querySelector("#brush-params button");'
+            + ' if (!el) return "no-brush-ui"; el.click();'
+            + ' return "clicked:" + (el.id || el.className || el.tagName); })()');
+          console.log('[smoke] brush:', r);
           await new Promise(r => setTimeout(r, 450));
         }
         if (process.argv.includes('--smoke-settings')) {
