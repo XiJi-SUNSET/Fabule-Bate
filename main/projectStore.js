@@ -261,7 +261,17 @@ function importAssets(filePaths) {
       const id = genAssetId();
       let ext = path.extname(src).toLowerCase().replace(/[^.a-z0-9]/g, '');
       if (!ext || ext.length > 6) ext = kind === 'image' ? '.png' : '.mp3';
-      const rel = 'assets/' + kind + '/' + id + ext;
+      /* 磁盘文件名保留原名（净化非法字符 + 重名 -1/-2 去重；允许中文），
+         与 MCP import_assets / 渲染端导入规则一致 —— 此前用素材 id 命名
+         （哈希形态），用户打开 assets 文件夹无法辨认文件（用户反馈） */
+      const base = (path.basename(src, path.extname(src))
+        .replace(/[^A-Za-z0-9._\u4e00-\u9fa5-]/g, '_')
+        .slice(0, 80)) || 'asset';
+      let fname = base + ext, n = 0;
+      while (fs.existsSync(path.join(state.root, 'assets', kind, fname))) {
+        fname = base + '-' + (++n) + ext;
+      }
+      const rel = 'assets/' + kind + '/' + fname;
       writeAtomic(path.join(state.root, rel), buf);
       copied.push(rel);
       state.project.assets.push({
