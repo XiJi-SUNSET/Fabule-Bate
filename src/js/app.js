@@ -394,6 +394,69 @@
   const origMark = MTG.markDirty;
   MTG.markDirty = function () { origMark(); autosave(); };
 
+  /* 鼠标交互区的笔输入归一化（用户需求：时间轴等区域"只有鼠标一种模式"）。
+     做法：捕获阶段把 pen 的 pointer 序列重放为 pointerType:'mouse' 的事件并拦下
+     原始笔事件 —— 此后所有监听者（拖拽/擦洗/多选/未来的 pointerType 分支）
+     看到的统一是 mouse 语义，笔的悬停噪声、侧键、驱动差异都不再影响这些区域。
+     浏览器因 preventDefault 不再合成兼容鼠标事件，故 click/dblclick 由本层补发
+     （down/up 同一目标才发 click；同目标两次 click 间隔 <500ms 补 dblclick）。
+     画布（#ov）不在范围内：压感/倾斜/笔尾橡皮保留原生。 */
+  function penToMouse(area) {
+    if (!area || area.__penToMouse) return;
+    area.__penToMouse = true;
+    let downTarget = null;
+    let lastClick = { t: 0, target: null };
+    const send = (e) => {
+      const ev = new PointerEvent(e.type, {
+        bubbles: true, cancelable: true, composed: true,
+        pointerId: e.pointerId, pointerType: 'mouse', isPrimary: true,
+        button: e.button, buttons: e.buttons,
+        clientX: e.clientX, clientY: e.clientY,
+        pressure: e.buttons ? 0.5 : 0, tiltX: 0, tiltY: 0, twist: 0, width: 1, height: 1,
+      });
+      ev.__penReplay = true;
+      e.target.dispatchEvent(ev);
+    };
+    area.addEventListener('pointerdown', (e) => {
+      if (e.__penReplay || e.pointerType !== 'pen') return;
+      e.preventDefault(); e.stopPropagation();
+      if (e.button !== 0) return;                 // 侧键/右键：这些区域不做任何事
+      downTarget = e.target;
+      send(e);
+    }, true);
+    area.addEventListener('pointermove', (e) => {
+      if (e.__penReplay || e.pointerType !== 'pen') return;
+      e.preventDefault(); e.stopPropagation();
+      if (downTarget) send(e);                    // 只有按下拖动才重放（悬停移动无需）
+    }, true);
+    area.addEventListener('pointerup', (e) => {
+      if (e.__penReplay || e.pointerType !== 'pen') return;
+      e.preventDefault(); e.stopPropagation();
+      if (e.button !== 0) { downTarget = null; return; }
+      send(e);
+      const t = (downTarget === e.target) ? e.target : null;   // 同目标才算点击
+      downTarget = null;
+      if (!t) return;
+      t.dispatchEvent(new MouseEvent('click', {
+        bubbles: true, cancelable: true, clientX: e.clientX, clientY: e.clientY,
+      }));
+      const now = Date.now();
+      if (lastClick.target === t && now - lastClick.t < 500) {
+        t.dispatchEvent(new MouseEvent('dblclick', {
+          bubbles: true, cancelable: true, clientX: e.clientX, clientY: e.clientY,
+        }));
+        lastClick = { t: 0, target: null };
+      } else {
+        lastClick = { t: now, target: t };
+      }
+    }, true);
+    area.addEventListener('pointercancel', (e) => {
+      if (e.__penReplay || e.pointerType !== 'pen') return;
+      e.preventDefault(); e.stopPropagation();
+      downTarget = null;
+    }, true);
+  }
+
   /* ══════════ 事件绑定 ══════════ */
   function bind() {
     $('btn-open').onclick = openFolder;
@@ -768,6 +831,10 @@
       });
     }
     window.addEventListener('resize', U.debounce(() => { MTG.timeline.render(); MTG.board.fitView(); }, 150));
+    /* 鼠标交互区：笔按鼠标语义工作（时间轴/分镜表/故事板；画布保留原生压感） */
+    penToMouse(document.querySelector('.timeline'));
+    penToMouse(document.getElementById('view-sheet'));
+    penToMouse(document.getElementById('view-story'));
   }
 
   /* 外部（Agent/MCP/手改）改动工程文件后的同步（H-1/H-2）：

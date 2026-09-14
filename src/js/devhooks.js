@@ -720,6 +720,41 @@
       return JSON.stringify(out);
     },
 
+    /* 笔→鼠标归一化探针：向时间轴区域发合成笔事件，
+       期望监听者看到的是 mouse 语义（pointerdown/up 为 mouse、click/dblclick 补发）。 */
+    penMouseProbe() {
+      const out = {};
+      try {
+        const area = document.querySelector('.timeline');
+        const tgt = document.querySelector('.clip') || document.querySelector('.tl-toolbar') || area;
+        if (!area || !tgt) { out.error = '时间轴区域缺失'; return JSON.stringify(out); }
+        const seen = [];
+        const h = (e) => seen.push(e.type + ':' + (e.pointerType || 'dom'));
+        ['pointerdown', 'pointerup', 'click', 'dblclick'].forEach(t => tgt.addEventListener(t, h));
+        const r = tgt.getBoundingClientRect();
+        const cx = r.left + Math.min(20, Math.max(2, r.width / 2));
+        const cy = r.top + Math.min(10, Math.max(2, r.height / 2));
+        const fire = (type, button) => tgt.dispatchEvent(new PointerEvent(type, {
+          bubbles: true, cancelable: true, composed: true, pointerId: 21, pointerType: 'pen',
+          isPrimary: true, button: button == null ? 0 : button, buttons: type === 'pointerup' ? 0 : 1,
+          pressure: 0.7, clientX: cx, clientY: cy,
+        }));
+        fire('pointerdown'); fire('pointerup');
+        fire('pointerdown'); fire('pointerup');
+        fire('pointerdown', 2); fire('pointerup', 2);          // 侧键：应被完全拦下
+        ['pointerdown', 'pointerup', 'click', 'dblclick'].forEach(t => tgt.removeEventListener(t, h));
+        out.seen = seen;
+        const penLeak = seen.filter(s => s.endsWith(':pen') && s.indexOf('pointer') === 0).length;
+        out.penBlocked = !seen.some(s => s === 'pointerdown:pen' || s === 'pointerup:pen');
+        out.mouseReplayed = seen.includes('pointerdown:mouse') && seen.includes('pointerup:mouse');
+        out.hasClick = seen.includes('click:dom');
+        out.hasDbl = seen.includes('dblclick:dom');
+        out.sideButtonIgnored = seen.filter(s => s.indexOf('click') === 0).length === 2;   // 侧键不产生 click
+        out.ok = out.penBlocked && out.mouseReplayed && out.hasClick && out.hasDbl && out.sideButtonIgnored && penLeak === 0;
+      } catch (e) { out.error = (e && e.message) || String(e); }
+      return JSON.stringify(out);
+    },
+
     /* 状态快照：引擎 / 画板 / 工程 / 错误层 四面 */
     async status() {
       const out = { engine: null, board: null, project: null, err: '' };
