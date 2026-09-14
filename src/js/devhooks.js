@@ -685,6 +685,41 @@
       return JSON.stringify(out);
     },
 
+    /* 自写抑制探针（诊断"播放/保存被误报外部更新"）：
+       以与 board.flush 相同的路径写一次当前帧图 → 等 watch 去抖 →
+       读渲染端收到的最近一次广播。期望：files 为空（自写被吞，无外部误报）。 */
+    async mediaSuppressProbe() {
+      const out = {};
+      try {
+        /* 冒烟环境常无当前帧：造最小场景（写帧图路径需要 board 记录） */
+        if (!MTG.state.currentBoardId) {
+          const p = MTG.state.project || (MTG.state.project = {
+            name: 'suppress-probe', boardW: 1280, boardH: 720, fps: 12,
+            tracks: [], clips: [], assets: [], boards: [], tagOptions: {}
+          });
+          if (!Array.isArray(p.boards)) p.boards = [];
+          if (!p.boards.some(x => x.id === 'bd-suppress')) {
+            p.boards.push({ id: 'bd-suppress', path: 'boards/suppress-probe.png', w: 1280, h: 720 });
+          }
+          MTG.state.currentBoardId = 'bd-suppress';
+        }
+        if (!window.fabula || !window.fabula.project) { out.error = '非桌面环境'; return JSON.stringify(out); }
+        const b = MTG.state.currentBoardId ? MTG.findBoard(MTG.state.currentBoardId) : null;
+        if (!b) { out.error = '无当前帧'; return JSON.stringify(out); }
+        window.__lastChangedInfo = null;
+        const blob = await MTG.board.toBlob();
+        if (!blob) { out.error = 'toBlob 失败'; return JSON.stringify(out); }
+        /* 直调 preload 桥（与 storage.writeFile 的 electron 分支等价）：走主进程
+           project:writeFile → markSelfMedia 登记 → watch 抑制，全链路一致 */
+        await window.fabula.project.writeFile(b.path, new Uint8Array(await blob.arrayBuffer()));
+        out.wrote = b.path;
+        await new Promise(r => setTimeout(r, 1500));
+        out.info = window.__lastChangedInfo;
+        out.suppressed = !(out.info && out.info.files && out.info.files.length);
+      } catch (e) { out.error = (e && e.message) || String(e); }
+      return JSON.stringify(out);
+    },
+
     /* 状态快照：引擎 / 画板 / 工程 / 错误层 四面 */
     async status() {
       const out = { engine: null, board: null, project: null, err: '' };

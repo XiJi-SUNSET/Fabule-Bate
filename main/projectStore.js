@@ -142,18 +142,29 @@ function markSelfWrite(rel, text) {
 
 /* ---------- fs.watch：外部（agent）变更 → 通知渲染端 ---------- */
 
+/* watch 名字 → 媒体采集判定（抽成独立函数便于测试与复用）。
+   规则（实测复现教训）：
+   · writeAtomic 的中间态临时文件（xxx.tmp-<pid>-<ts>）**不计入媒体变更** ——
+     watch 捕获的是 tmp 名而自写登记（markSelfMedia）用正式名，直接比对会全部漏吞，
+     导致每次保存/播放切帧 flush 都被误报"外部更新"（files 全是 .tmp- 名）；
+   · 正式名的"自己写的"由 consumeSelfMedia 吞掉（N-A5）；
+   · 正式名的未登记事件（外部直写，如 MCP set_shot_image）照常采集。 */
+function noteWatchName(name) {
+  if (!name) return;
+  const n = String(name).replace(/\\/g, '/');
+  if (/\.tmp-\d+-\d+$/.test(n)) return;
+  if (n.startsWith('boards/') || n.startsWith('shots/') || n.startsWith('assets/')) {
+    if (!consumeSelfMedia(n)) state.mediaFiles.add(n);
+  }
+}
+
 function startWatch(root) {
   if (state.watcher) { try { state.watcher.close(); } catch (_) {} state.watcher = null; }
   try {
     state.watcher = fs.watch(root, { recursive: true }, (_ev, name) => {
       /* 媒体文件（帧图/素材）变化也要标记（Agent 纯换图不改任何 JSON）；
-         但自己写的（markSelfMedia 登记过）要吞掉，否则每次保存都打断用户（N-A5 修订） */
-      if (name) {
-        const n = String(name).replace(/\\/g, '/');
-        if (n.startsWith('boards/') || n.startsWith('shots/') || n.startsWith('assets/')) {
-          if (!consumeSelfMedia(n)) state.mediaFiles.add(n);
-        }
-      }
+         自写吞掉与 tmp 过滤见 noteWatchName（N-A5 修订 + 误报根因修复） */
+      noteWatchName(name);
       scheduleNotify();
     });
     /* 被监视目录被删/掉线时 error 不监听会变 uncaughtException（L-14） */
@@ -304,5 +315,5 @@ module.exports = {
   markSelfWrite,                    // main.js 写 montage.json 后登记（watch 回环抑制）
   markSelfMedia,                    // main.js 写帧图/素材后登记（N-A5 修订）
   /* 测试探针（test/project-store.test.mjs）：直接驱动变更判定，不拉起 fs.watch */
-  __test: { notifyChanged, state, consumeSelfMedia, selfMedia },
+  __test: { notifyChanged, state, consumeSelfMedia, selfMedia, noteWatchName },
 };

@@ -28,6 +28,26 @@ function setup() {
   return { dir, events };
 }
 
+test('watch 媒体采集：tmp 中间态不误报、正式名照常（误报根因回归）', () => {
+  const { events } = setup();
+  const st = store.__test.state;
+  const T = store.__test;
+  st.mediaFiles = new Set();
+  /* 1) 原子写中间态（writeAtomic 的 tmp 名）→ 不采集（此前每次保存都被误报"外部更新"） */
+  T.noteWatchName('boards/a.png.tmp-123-456');
+  assert.equal(st.mediaFiles.size, 0, 'tmp 中间态不得计入媒体变更');
+  /* 2) 正式名 + 自己登记过 → 吞掉 */
+  T.selfMedia.clear();
+  store.markSelfMedia('boards/a.png');
+  T.noteWatchName('boards/a.png');
+  assert.equal(st.mediaFiles.size, 0, '自写登记的正式名应被吞');
+  /* 3) 正式名 + 未登记（外部直写，如 MCP set_shot_image）→ 必须采集 */
+  T.selfMedia.clear();
+  T.noteWatchName('boards/ext.png');
+  assert.equal(st.mediaFiles.size, 1, '外部直写正式名必须采集');
+  st.mediaFiles.clear();
+});
+
 test('montage.json：基线缺失首现广播 / 不变不广播 / 变化广播后收敛（N-B20）', () => {
   const { dir, events } = setup();
   const file = path.join(dir, 'montage.json');

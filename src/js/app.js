@@ -762,6 +762,7 @@
        只认 external：自己写盘的回环不触发。 */
     if (window.fabula && window.fabula.project && window.fabula.project.onChanged) {
       window.fabula.project.onChanged((info) => {
+        try { window.__lastChangedInfo = info; } catch (_) {}   // 诊断探针读取（mediaSuppressProbe）
         if (!info || !info.external) return;
         reloadExternal(info).catch((err) => console.warn('[app] 外部变更同步失败', err));
       });
