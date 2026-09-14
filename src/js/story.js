@@ -118,10 +118,20 @@
         MTG.ui.setView('timeline');
         MTG.setPlayhead(Math.max(0, shot.start) + 0.001);
       });
+      /* 单击/双击画面都只开绘画弹窗，且双击必须拦住冒泡（S-6）：
+         否则 dblclick 会触发卡片级的"跳时间轴"，弹窗开着视图却被切走。
+         延迟 220ms 判定单击：期间出现 dblclick 就并成一次"开弹窗"。 */
+      let picClickTimer = 0;
       pic.addEventListener('click', e => {
         e.stopPropagation();
         MTG.state.selectedClipIds = new Set([shot.id]);
         S.syncSel();
+        clearTimeout(picClickTimer);
+        picClickTimer = setTimeout(() => MTG.sheet.openPaint(shot), 220);
+      });
+      pic.addEventListener('dblclick', e => {
+        e.stopPropagation();
+        clearTimeout(picClickTimer);
         MTG.sheet.openPaint(shot);
       });
 
@@ -422,6 +432,9 @@
     show() {
       const s = S.shots[S.idx];
       if (!s) return;
+      /* 令牌必须在所有分支之前统一递增（S-8）：空镜头/帧缺失分支也要作废
+         在途的缩略图 promise —— 否则上一镜的图回来时会填进空镜头 */
+      const tk = ++S._showToken;
       const img = document.getElementById('sl-img');
       const no = document.getElementById('sl-no');
       const meta = document.getElementById('sl-meta');
@@ -431,7 +444,6 @@
       if (!s.boardId) { img.removeAttribute('src'); return; }
       const b = MTG.findBoard(s.boardId);
       if (!b) { img.removeAttribute('src'); return; }
-      const tk = ++S._showToken;        // 快速切镜：慢 promise 回来不能覆盖新镜画面（L-5）
       MTG.board.thumbUrl(b).then(u => { if (u && tk === S._showToken) img.src = u; });
     },
 

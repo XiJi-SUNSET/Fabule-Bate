@@ -25,10 +25,12 @@
   const UI = (n) => { try { const f = MTG.ui && MTG.ui[n]; if (typeof f === 'function') f(); } catch (_) {} };
 
   /* 工作台钩子：引擎在画布上收到指针时先问这里，返回 true = 这一下由工作台消费。
-     当前的用途：播放头不在任何分镜帧上时不落墨（"帧"是业务概念，引擎不知道）。 */
+     当前的用途：播放头不在任何分镜帧上时不落墨（"帧"是业务概念，引擎不知道）。
+     H-11：空态不能一刀切吞掉所有指针 —— 抓手/缩放/空格平移是导航操作，必须放行，
+     否则"放大后只能靠「适应」复位"。 */
   window.__fabulaWorkspace = {
-    onPointerDown() { return !!B._idle; },
-    onPointerMove() { return !!B._idle; },
+    onPointerDown() { return B._blockPaint(); },
+    onPointerMove() { return B._blockPaint(); },
   };
 
   /* ---------- 参数对象：直接映射引擎 P（读/写实时生效） ---------- */
@@ -212,6 +214,14 @@
       const el = document.getElementById('stage');
       if (el) el.classList.toggle('no-frame', !!on);
     },
+    /* 空态是否拦截指针：导航类（抓手/缩放/空格平移）放行，其余拦下（不落墨） */
+    _blockPaint() {
+      if (!B._idle) return false;
+      if (B.spaceHeld) return false;
+      const e = E();
+      const t = e && e.tool ? e.tool() : '';
+      return !(t === 'hand' || t === 'zoom');
+    },
 
     /* ================= 画幅 ================= */
     applySize(w, h) {
@@ -232,6 +242,14 @@
     trimUndo() {},                       /* 引擎自带撤销栈上限，无需裁剪 */
 
     clearLayer(id) { const e = E(); if (e) e.clear(id || MTG.state.layer || 'fg'); },
+
+    /* 切层（S-2）：必须真的调引擎 —— 只改 MTG.state.layer 的话画笔仍落原层。
+       UI 高亮/状态的单一回写点是引擎回调 onLayerChange（init 里接好）。 */
+    setLayer(id) {
+      const e = E();
+      if (e && e.setLayer) { e.setLayer(id); return; }
+      MTG.state.layer = id;                    // 引擎未就绪：至少让状态一致
+    },
 
     clearRef() {
       B.refImg = null;
@@ -476,7 +494,8 @@
         if (tk !== B._token) return;
         B._silent = true;
         try {
-          e.clearForShot();                      // 图层 / 掩膜 / 历史一起复位，跨帧不残留
+          B.xfEnd();                             // 变换会话不得跨帧（S-4）：否则上一帧内容
+          e.clearForShot();                      // 会以变换框浮在新帧上，误操作还会写进新帧
           await e.loadImage(blob, { layer: 'fg', mode: 'stretch', clearUndo: true, fit: false });
         } finally {
           B._silent = false;                     // 载入异常也必须复位：否则后续笔迹的脏标记被吞、静默丢失
@@ -530,6 +549,8 @@
       }
       B.onionCache.delete(b.id);
       B.dropThumb(b.id);                   // 内容变了，旧缩略图 URL 作废
+      /* H-12：时间轴片段缩略图重画（此前 drop 后没人重设 <img>，缩略图停在旧画面） */
+      if (MTG.timeline && MTG.timeline.refreshBoardThumb) MTG.timeline.refreshBoardThumb(b.id);
       B.dirty = false;
       return true;
     },
@@ -575,6 +596,7 @@
       const blob = await MTG.storage.readBlob(b.path);
       B._silent = true;
       try {
+        B.xfEnd();                               // 重读帧时同样丢弃未提交的变换（S-4）
         e.clearForShot();
         if (blob) await e.loadImage(blob, { layer: 'fg', mode: 'stretch', clearUndo: !keepUndo, fit: false });
       } finally { B._silent = false; }

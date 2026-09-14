@@ -163,14 +163,19 @@
         over.classList.add(below ? 'drop-below' : 'drop-above');
         target = { id: over.dataset.id, below };
       };
-      const up = () => {
+      /* M-2：up/cancel 统一收尾（pointercancel 时曾把监听器留在 document 上） */
+      const end = (commit) => {
         document.removeEventListener('pointermove', move);
-        document.removeEventListener('pointerup', up);
+        document.removeEventListener('pointerup', onUp);
+        document.removeEventListener('pointercancel', onCancel);
         clear();
-        if (target) S.dropRow(shot.id, target.id, target.below);
+        if (commit && target) S.dropRow(shot.id, target.id, target.below);
       };
+      const onUp = () => end(true);
+      const onCancel = () => end(false);
       document.addEventListener('pointermove', move);
-      document.addEventListener('pointerup', up);
+      document.addEventListener('pointerup', onUp);
+      document.addEventListener('pointercancel', onCancel);
     },
 
     dropRow(id, overId, below) {
@@ -202,7 +207,20 @@
       const holder = document.createElement('span');
       pic.appendChild(holder);
       S.picCell(shot, holder);
-      pic.onclick = () => S.openPaint(shot);
+      /* 单击 = 开绘画弹窗；双击画面同样只开弹窗、且必须拦住冒泡（S-6）——
+         否则第一次 click 开弹窗、dblclick 又冒泡到行上触发"跳时间轴"，
+         用户会看到"弹窗开着且视图被切走"（分镜表切走后工作台第三列还是残缺的）。
+         延迟 220ms 判定单击：期间出现 dblclick 就并成一次"开弹窗"。 */
+      let clickTimer = 0;
+      pic.onclick = () => {
+        clearTimeout(clickTimer);
+        clickTimer = setTimeout(() => { S.openPaint(shot); }, 220);
+      };
+      pic.addEventListener('dblclick', e => {
+        e.stopPropagation();
+        clearTimeout(clickTimer);
+        S.openPaint(shot);
+      });
       td.appendChild(pic);
       return td;
     },
@@ -365,12 +383,44 @@
         + (cp.boardId ? '（画面与原镜头共用同一帧）' : ''));
     },
 
-    delShot() {
+    /* 删除镜头：二次确认（同一按钮 3 秒内再点一次）+ 完整清理链（S-7）。
+       旧实现只 filter 掉 clip —— boards/*.png 与素材库条目留下"删不掉的孤儿帧"，
+       而且零确认、不可撤销。现在复用 assets.removeItems：连帧条目、引用片段、
+       磁盘帧文件（回收站）、缩略图/洋葱皮缓存一起清。 */
+    async delShot() {
       const c = S.singleBoard();
       if (!c) { MTG.toast('先在表格里选中一个镜头（点行即可）', true); return; }
-      MTG.state.selectedClipIds = new Set([c.id]);
-      MTG.timeline.deleteSelected();
-      MTG.toast('已删除镜头');
+      const btn = document.getElementById('sh-del');
+      if (S._delArm !== c.id) {                       // 第一次点：进入确认态
+        S._delArm = c.id;
+        clearTimeout(S._delTimer);
+        S._delTimer = setTimeout(() => S._delDisarm(), 3000);
+        if (btn) { btn.classList.add('armed'); btn.textContent = '再点一次确认'; }
+        MTG.toast('再点一次「删除」确认删除该镜头' + (c.boardId ? '（画面文件也会移入回收站）' : ''));
+        return;
+      }
+      S._delDisarm();
+      const p = MTG.state.project;
+      const bid = c.boardId;
+      p.clips = p.clips.filter(x => x !== c);
+      MTG.state.selectedClipIds = new Set();
+      MTG.markDirty();
+      /* 帧文件只在没有其它片段引用时才删（复制镜头共享同一帧） */
+      const stillUsed = !!(bid && p.clips.some(x => x.boardId === bid));
+      if (bid && !stillUsed) {
+        const b = MTG.findBoard(bid);
+        if (b) await MTG.assets.removeItems([Object.assign({ type: 'board' }, b)]);
+        else MTG.render();
+      } else {
+        MTG.render();
+      }
+      MTG.toast('已删除镜头' + (bid && !stillUsed ? '（帧文件已移入回收站）' : ''));
+    },
+    _delDisarm() {
+      S._delArm = null;
+      clearTimeout(S._delTimer);
+      const btn = document.getElementById('sh-del');
+      if (btn) { btn.classList.remove('armed'); btn.textContent = '删除'; }
     },
 
     /* 上/下移动 = 在该轨的镜头序列里换位，并让时间轴保持首尾相接 */

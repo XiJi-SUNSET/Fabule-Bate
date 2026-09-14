@@ -110,6 +110,12 @@
         return true;
       } catch (e) { return false; }
     },
+    /* 删除素材的默认通道：桌面版移入系统回收站（误删可恢复），
+       浏览器版没有回收站概念，退回直接删除 */
+    async trashFile(path) {
+      if (S.mode === 'electron') return !!(await FN().trashFile(path).catch(() => false));
+      return S.deleteFile(path);
+    },
 
     /* 列出工程内可用媒体（排除 boards/ 与隐藏目录） */
     async listMedia() {

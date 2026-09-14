@@ -302,14 +302,40 @@ function importAssets(filePaths) {
     throw e;
   }
   state.selfWriteAt = Date.now();
-  return Object.assign(snapshot(), { added: added.length, skipped });
+  /* addedPaths：本次复制进工程的文件相对路径清单。
+     渲染端据此**精确**补录新素材，而不是全盘扫描 ——
+     全盘扫描会把 assets/ 里的历史遗留文件也一并收进素材库（"导入一个出现两条"）。 */
+  return Object.assign(snapshot(), { added: added.length, skipped, addedPaths: copied.slice() });
+}
+
+/* 渲染端删除素材后同步主进程清单：按相对路径从 fabula.json 的 assets 里移除。
+   只动清单不碰磁盘（磁盘文件的回收由渲染端经 project:trashFile 完成）。 */
+function removeAssets(rels) {
+  if (!state.root) return { removed: 0 };
+  const want = new Set((Array.isArray(rels) ? rels : [])
+    .slice(0, 4096)
+    .map((r) => String(r || '').replace(/\\/g, '/'))
+    .filter(Boolean));
+  if (!want.size) return { removed: 0 };
+  const before = state.project.assets.length;
+  state.project.assets = state.project.assets.filter((a) => !want.has(a.path));
+  const removed = before - state.project.assets.length;
+  if (removed) {
+    try {
+      state.lastJson = writeJsonAtomic(path.join(state.root, 'fabula.json'), state.project);
+      state.selfWriteAt = Date.now();
+    } catch (e) {
+      console.error('[fabula] removeAssets 清单写入失败：', e.message);
+    }
+  }
+  return { removed };
 }
 
 function attachWindow(win) { state.win = win; }
 function current() { return snapshot(); }
 
 module.exports = {
-  openDir, createProject, writeShotImage, importAssets,
+  openDir, createProject, writeShotImage, importAssets, removeAssets,
   current, attachWindow,
   writeAtomic,                      // main.js 的 writeFile/备份导出共用（原子写）
   markSelfWrite,                    // main.js 写 montage.json 后登记（watch 回环抑制）

@@ -1,5 +1,5 @@
 /* Fabula 主进程：窗口、fabula:// 自定义协议、工程 IPC、fs.watch 转发 */
-const { app, BrowserWindow, protocol, net, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, protocol, net, ipcMain, dialog, shell } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const store = require('./projectStore.js');
@@ -305,6 +305,10 @@ function createWindow() {
         }
         const evalArg = (process.argv.find(a => a.startsWith('--smoke-eval=')) || '').slice(13);
         if (evalArg) {
+          /* 给 eval 代码一个空白临时工程目录（探针自建工程用，避免污染 demo 目录） */
+          const evalDir = require('node:fs').mkdtempSync(path.join(require('node:os').tmpdir(), 'fabula-eval-'));
+          await win.webContents.executeJavaScript(
+            'window.__fabulaSmokeDir = ' + JSON.stringify(evalDir.split(path.sep).join('/')));
           const r = await win.webContents.executeJavaScript(evalArg);
           console.log('[smoke-eval]', typeof r === 'object' ? JSON.stringify(r) : r);
         }
@@ -431,7 +435,29 @@ ipcMain.handle('project:deleteFile', (_e, rel) => {
   const abs = safeMappedFile(cur.root, String(rel || ''));
   if (!abs) return false;
   if (isProtectedBase(abs)) return false;      // fabula.json 不可删（N-A3）
-  try { require('node:fs').rmSync(abs, { force: true }); return true; } catch (_) { return false; }
+  try { require('node:fs').rmSync(abs, { force: true }); } catch (_) { return false; }
+  /* 自写抑制：删除也是 UI 自身操作，登记后 watch 不再把它当"外部变更"广播 */
+  const relNorm = path.normalize(String(rel || '')).replace(/\\/g, '/');
+  if (/^(boards|assets|shots)\//.test(relNorm)) store.markSelfMedia(relNorm);
+  return true;
+});
+/* 素材/帧图删除的默认通道：工程内文件移入系统回收站（可恢复），
+   回收站不可用时回退硬删除。语义：把导入时复制进工程的托管副本清出去 ——
+   不删的话下次「扫描」会把它们当新素材补录（用户反馈：删了又回来）。 */
+ipcMain.handle('project:trashFile', async (_e, rel) => {
+  const cur = store.current();
+  if (!cur.root) return false;
+  const abs = safeMappedFile(cur.root, String(rel || ''));
+  if (!abs) return false;
+  if (isProtectedBase(abs)) return false;
+  let ok = false;
+  try { await shell.trashItem(abs); ok = true; }
+  catch (_) { try { require('node:fs').rmSync(abs, { force: true }); ok = true; } catch (_) { ok = false; } }
+  if (ok) {
+    const relNorm = path.normalize(String(rel || '')).replace(/\\/g, '/');
+    if (/^(boards|assets|shots)\//.test(relNorm)) store.markSelfMedia(relNorm);
+  }
+  return ok;
 });
 ipcMain.handle('project:listMedia', () => {
   const cur = store.current();
@@ -473,6 +499,12 @@ ipcMain.handle('assets:importPaths', (_e, paths) => {
     if (!isApprovedPath(approvedFiles, p)) throw new Error('仅接受经系统对话框选择的文件（M-10）');
   }
   return store.importAssets(paths);
+});
+/* 渲染端删除素材后同步主进程 fabula.json 的素材清单（按相对路径移除）。
+   不做的话：清单里残留已删素材，MCP / 后续导入逻辑读到过期的资产列表。 */
+ipcMain.handle('assets:remove', (_e, rels) => {
+  if (!Array.isArray(rels)) throw new Error('需要路径数组');
+  return store.removeAssets(rels);
 });
 
 /* ---------- 导出 ----------

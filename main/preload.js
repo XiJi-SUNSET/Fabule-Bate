@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('fabula', {
     /* 桌面存储后端（storage.js 的 electron 模式用）：相对工程根的读写 */
     writeFile: (rel, bytes) => ipcRenderer.invoke('project:writeFile', rel, bytes),
     deleteFile: (rel) => ipcRenderer.invoke('project:deleteFile', rel),
+    /* 删除素材/帧图的默认通道：移入系统回收站（可用时） */
+    trashFile: (rel) => ipcRenderer.invoke('project:trashFile', rel),
     listMedia: () => ipcRenderer.invoke('project:listMedia'),
     /* 外部（agent）或自身落盘后的变更通知；回调参数 { external, sources, at, files }
        sources: 'montage'（UI 模型）/ 'fabula'（冒烟自检）/ 'media'（帧图/素材文件）；
@@ -32,9 +34,11 @@ contextBridge.exposeInMainWorld('fabula', {
     }
   },
   assets: {
-    /* 文件对话框多选 → 复制进工程 assets/ → 返回 { root, project, added, skipped } */
+    /* 文件对话框多选 → 复制进工程 assets/ → 返回 { root, project, added, skipped, addedPaths } */
     importDialog: () => ipcRenderer.invoke('assets:importDialog'),
-    importPaths: (paths) => ipcRenderer.invoke('assets:importPaths', paths)
+    importPaths: (paths) => ipcRenderer.invoke('assets:importPaths', paths),
+    /* 渲染端删除素材后同步主进程清单（按工程内相对路径） */
+    remove: (rels) => ipcRenderer.invoke('assets:remove', rels)
   },
   exp: {
     /* 导出：目标路径缺省时弹系统对话框（用户显式选择）；测试/脚本可显式传入 */

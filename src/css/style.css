@@ -182,6 +182,13 @@ input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border: 0; bo
 .btn.primary:hover, .btn.btn-primary:hover { background: var(--red-dark); }
 .btn.ghost { background: transparent; }
 .btn.tiny { padding: 3px 7px; font-size: 11px; border-radius: 6px; }
+/* 保存状态指示（顶栏）：idle=未打开 / saved=已保存 / dirty=未保存 / saving=保存中 / failed=保存失败 */
+.save-state { font-size: 11px; color: var(--text-dim); min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
+.save-state[data-st="saved"] { color: var(--green, #4caf7d); }
+.save-state[data-st="dirty"] { color: var(--yellow, #d9a441); }
+.save-state[data-st="saving"] { color: var(--text-dim); }
+.save-state[data-st="failed"] { color: var(--red); }
+.btn.armed { color: #fff; background: var(--red); border-color: transparent; }
 .btn.icon { padding: 4px 8px; min-width: 28px; text-align: center; }
 .btn.play { color: #fff; background: rgba(var(--red-rgb), 0.9); border-color: transparent; }
 .btn.play.on { background: var(--blue); }
@@ -210,9 +217,13 @@ input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border: 0; bo
 .asset-item {
   display: flex; gap: 8px; align-items: center; padding: 5px; border-radius: 10px;
   border: 1px solid var(--border); background: var(--card); cursor: grab; transition: .14s;
+  user-select: none;                 /* Shift 点选多选时不选中文本 */
 }
 .asset-item:hover { border-color: rgba(var(--red-rgb), 0.45); transform: translateX(2px); }
 .asset-item.active { border-color: var(--red); background: rgba(var(--red-rgb), 0.10); }
+.asset-item.selected { border-color: var(--red); background: rgba(var(--red-rgb), 0.14); box-shadow: inset 0 0 0 1px rgba(var(--red-rgb), 0.35); }
+.asset-item.selected .asset-del { opacity: 1; }
+.btn:disabled { opacity: .4; pointer-events: none; }
 .asset-thumb {
   width: 56px; height: 38px; border-radius: 7px; flex: none; overflow: hidden;
   background: var(--stage); display: grid; place-items: center; font-size: 14px; color: var(--text-dim);

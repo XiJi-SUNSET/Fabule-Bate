@@ -45,6 +45,25 @@
         ? '工程文件 montage.json 在文件夹内，素材原地存放，浏览器不存任何缓存'
         : '点「打开工程文件夹」：选择一个文件夹，有 montage.json 就打开，没有就新建工程';
     },
+    /* 保存状态指示（S-5）：顶栏 #save-state，让"存没存上"始终可见 */
+    syncSave(st) {
+      const el = $('save-state');
+      if (!el) return;
+      if (!MTG.storage.ready || !MTG.state.project) {
+        el.dataset.st = 'idle'; el.textContent = '—'; el.title = '未打开工程';
+        return;
+      }
+      /* saving / saveFailed 是下方保存链的闭包变量（调用都发生在它们初始化之后） */
+      const s = st || (saveFailed ? 'failed' : (saving ? 'saving' : (MTG.state.dirty ? 'dirty' : 'saved')));
+      const MAP = {
+        saved: ['已保存', '已写入 montage.json'],
+        dirty: ['未保存', '有改动待自动保存'],
+        saving: ['保存中', '正在写入 montage.json…'],
+        failed: ['保存失败', '写入失败（可能被其它程序占用），稍后会自动重试'],
+      };
+      const rec = MAP[s] || MAP.saved;
+      el.dataset.st = s; el.textContent = rec[0]; el.title = rec[1];
+    },
     syncColor(hex) {
       if (!hex) hex = MTG.state.color;          // 无参调用兜底（引擎 onColor 路径）
       MTG.state.color = hex;
@@ -254,10 +273,18 @@
     syncBrushSliders() {
       const bp = MTG.board.bp;
       if (!bp) return;
-      [['b-size', 'size'], ['b-opacity', 'opacity']].forEach(([id, key]) => {
+      /* 旧版本错值修正（S-1）：滑杆 5~100 曾被直写进引擎的 0.01~1 参数，
+         已被 saveParams 持久化。回填前先把 >1 的值落回 <1，顺手存回偏好。 */
+      if (bp.opacity > 1) {
+        bp.opacity = U.clamp(bp.opacity / 100, 0.01, 1);
+        MTG.brushes.saveParams(MTG.board.brushId, { opacity: bp.opacity });   // 只回写这一项（H-10）
+      }
+      /* 滑杆是百分数（1~100），引擎参数 opacity 是 0.01~1：回填必须 ×100，
+         否则会把 1（=100%）显示成 1%，而且下一次拖动会把错值写回去（S-1） */
+      [['b-size', 'size', 1], ['b-opacity', 'opacity', 100]].forEach(([id, key, k]) => {
         const el = $(id);
         if (!el) return;
-        el.value = Math.round(bp[key]);
+        el.value = Math.round(U.clamp(bp[key] * k, +el.min, +el.max));
         const s = $(id + '-v');
         if (s) s.textContent = el.value;
       });
@@ -270,6 +297,12 @@
     },
     /* 切换工作台：时间轴 ⇄ 分镜表（同一份工程数据，只换渲染形态） */
     setView(v) {
+      /* 绘画弹窗是模态：画板面板被搬进了弹窗，切视图会让工作台缺一列（S-6 的残缺布局）
+         → 先「存帧并关闭」再切 */
+      if (MTG.sheet && MTG.sheet.pmShot) {
+        MTG.toast('绘画窗口开着，先「存帧并关闭」再切换视图', true);
+        return;
+      }
       document.getElementById('view-timeline').classList.toggle('hidden', v !== 'timeline');
       document.getElementById('view-sheet').classList.toggle('hidden', v !== 'sheet');
       document.getElementById('view-story').classList.toggle('hidden', v !== 'story');
@@ -305,6 +338,10 @@
     externalPending = null;
     setTimeout(() => { reloadExternal(next).catch((err) => console.warn('[app] 外部变更同步失败', err)); }, 60);
   }
+  /* 供时间轴等拖拽会话结束后主动补跑积压的外部同步（H-13） */
+  MTG.app = {
+    resumeExternal() { flushPendingExternal(); }
+  };
 
   async function openFolder() {
     if (switchingProject) return;
@@ -352,6 +389,7 @@
     await applyProject();
     await MTG.assets.rescan();
     MTG.render();
+    MTG.ui.syncSave('saved');
   }
 
   async function applyProject() {
@@ -368,18 +406,26 @@
 
   /* 自动保存统一入口：落笔 debounce（4s）与设置的间隔两条触发源共用同一份串行逻辑，
      避免两条路径并发写 montage.json 交错撕裂（L-6） */
-  let saving = false, saveAgain = false;
+  let saving = false, saveAgain = false, saveFailed = false;
   async function saveTick() {
     if (saving) { saveAgain = true; return; }
     saving = true;
+    const willWrite = !!(MTG.board.dirty || (MTG.state.dirty && MTG.storage.ready && MTG.state.project));
+    if (willWrite) MTG.ui.syncSave('saving');
     try {
       if (MTG.board.dirty) await MTG.board.flush();
       if (MTG.state.dirty && MTG.storage.ready && MTG.state.project) {
         await MTG.storage.saveProject(MTG.state.project);
         MTG.ui.syncProject();
       }
+      if (saveFailed) { saveFailed = false; MTG.toast('保存已恢复'); }
+      MTG.ui.syncSave('saved');
     } catch (err) {
+      /* 失败不再静默（S-5）：抢锁超时/磁盘错误都要让用户看见；自动保存下次会重试 */
       console.warn('[app] 自动保存失败', err);
+      if (!saveFailed) MTG.toast('自动保存失败：' + ((err && err.message) || err), true);
+      saveFailed = true;
+      MTG.ui.syncSave('failed');
     } finally {
       saving = false;
       if (saveAgain) { saveAgain = false; saveTick(); }
@@ -392,7 +438,7 @@
   }
   const autosave = U.debounce(saveTick, 4000);
   const origMark = MTG.markDirty;
-  MTG.markDirty = function () { origMark(); autosave(); };
+  MTG.markDirty = function () { origMark(); MTG.ui.syncSave('dirty'); autosave(); };
 
   /* 鼠标交互区的笔输入归一化（用户需求：时间轴等区域"只有鼠标一种模式"）。
      做法：捕获阶段把 pen 的 pointer 序列重放为 pointerType:'mouse' 的事件并拦下
@@ -467,10 +513,20 @@
     });
     $('btn-save').onclick = async () => {
       if (!MTG.storage.ready) { MTG.toast('请先打开工程文件夹', true); return; }
-      await waitSaveIdle();                         // 与自动保存串行（R3 B-12）
-      await MTG.board.flush();                      // 画板内容先落进帧 PNG
-      await MTG.storage.saveProject(MTG.state.project);
-      MTG.toast('工程已保存');
+      try {
+        MTG.ui.syncSave('saving');
+        await waitSaveIdle();                         // 与自动保存串行（R3 B-12）
+        await MTG.board.flush();                      // 画板内容先落进帧 PNG
+        await MTG.storage.saveProject(MTG.state.project);
+        saveFailed = false;
+        MTG.ui.syncSave('saved');
+        MTG.toast('工程已保存');
+      } catch (err) {
+        /* 手动保存失败必须可见（S-5）：此前 Promise 静默 reject，界面毫无反应 */
+        saveFailed = true;
+        MTG.ui.syncSave('failed');
+        MTG.toast('保存失败：' + ((err && err.message) || err) + '（稍后会自动重试）', true);
+      }
     };
     $('btn-export').onclick = async () => {
       const p = MTG.state.project;
@@ -506,7 +562,12 @@
     $('zoom').oninput = e => MTG.timeline.setZoom(+e.target.value);
     $('btn-zoom-in').onclick = () => MTG.timeline.setZoom(U.clamp(MTG.state.pxPerSec * 1.35, 8, 400));
     $('btn-zoom-out').onclick = () => MTG.timeline.setZoom(U.clamp(MTG.state.pxPerSec / 1.35, 8, 400));
-    $('snap').onchange = e => { MTG.state.snap = e.target.checked; };
+    /* 顶栏吸附：必须回写设置（H-2）——只改 MTG.state 的话，任何 settings.apply()
+       （改主题/字号等）都会用旧值把勾选静默改回去，顶栏与设置面板长期不同步 */
+    $('snap').onchange = e => {
+      MTG.state.snap = e.target.checked;
+      MTG.settings.set('snap', e.target.checked);
+    };
 
     $('btn-add-audio-track').onclick = () => MTG.timeline.addTrack('audio');
     $('btn-add-board-track').onclick = () => MTG.timeline.addTrack('board');
@@ -524,7 +585,14 @@
         try {
           const r = await imp();
           if (!r) return;                             // 用户取消
-          await MTG.assets.rescan();
+          /* 只补录本次新导入的文件（addedPaths），不再全盘 rescan ——
+             全盘扫描会把 assets/ 里历史遗留的旧文件一并收进素材库
+             （用户反馈：导入一个文件却出现两条） */
+          if (Array.isArray(r.addedPaths) && r.addedPaths.length) {
+            await MTG.assets.mergeImported(r.addedPaths);
+          } else if (r.added) {
+            await MTG.assets.rescan();                // 主进程未回清单：退回扫描（兼容旧版）
+          }
           MTG.toast('已导入 ' + (r.added || 0) + ' 个素材' + (r.skipped ? '，跳过 ' + r.skipped + ' 个' : ''));
         } catch (err) {
           MTG.toast('导入失败：' + ((err && err.message) || err), true);
@@ -538,6 +606,7 @@
       e.target.value = '';
     };
     $('btn-rescan').onclick = () => MTG.assets.rescan();
+    $('btn-del-selected').onclick = () => MTG.assets.removeSelected();
     $('btn-add-group').onclick = () => {
       const p = MTG.state.project;
       if (!p) { MTG.toast('请先打开工程文件夹', true); return; }
@@ -563,12 +632,19 @@
     document.querySelectorAll('.tool[data-brush]').forEach(b => {
       b.onclick = () => MTG.ui.setBrush(b.dataset.brush);
     });
+    /* 图层切换必须通知引擎（S-2）：只改 MTG.state.layer / 按钮高亮的话，
+       引擎仍停在原层 —— 表现为"切到背景层画笔迹仍落线稿层、清层清的是空层"。
+       UI 高亮由引擎回调 onLayerChange 单向回写（board.js init 已接）。 */
     document.querySelectorAll('.layer-switch .layer').forEach(b => {
       b.onclick = () => {
-        MTG.state.layer = b.dataset.layer;
-        document.querySelectorAll('.layer-switch .layer').forEach(x => x.classList.toggle('active', x === b));
+        if (MTG.board.setLayer) MTG.board.setLayer(b.dataset.layer);
+        else B_fallbackLayer(b.dataset.layer);
       };
     });
+    function B_fallbackLayer(id) {          // 引擎未就绪时的降级：只同步 UI 状态
+      MTG.state.layer = id;
+      document.querySelectorAll('.layer-switch .layer').forEach(x => x.classList.toggle('active', x.dataset.layer === id));
+    }
     $('btn-undo').onclick = () => MTG.board.undo();
     $('btn-redo').onclick = () => MTG.board.redo();
     $('btn-new-board').onclick = () => MTG.board.newFrame();
@@ -582,20 +658,28 @@
       MTG.toast('已清空当前层');
     };
 
-    /* 笔刷参数 */
-    const bindSlider = (id, key) => {
+    /* 笔刷参数：滑杆值 → 引擎参数的换算（toEngine）。
+       不换算会出 S-1：滑杆 5~100 直写引擎的 0.01~1 参数（u_opacity 被放大 100 倍饱和，
+       画什么都是 100% 实心），错值还会被 saveParams 持久化污染手感。 */
+    const bindSlider = (id, key, toEngine) => {
       const el = $(id);
       el.oninput = () => {
-        MTG.state.brush[key] = +el.value;
-        if (MTG.board.bp) {                       // 同步到当前笔刷自己的参数
-          MTG.board.bp[key] = +el.value;
-          MTG.brushes.saveParams(MTG.board.brushId, MTG.board.bp);
+        const raw = +el.value;
+        MTG.state.brush[key] = raw;                // UI 状态保持滑杆原值（百分数）
+        if (MTG.board.bp) {                        // 同步到当前笔刷自己的参数（引擎单位）
+          const val = toEngine ? toEngine(raw) : raw;
+          MTG.board.bp[key] = val;
+          /* H-10：只持久化"被改的这一项" —— 传全量 bp 会把当前工具（比如橡皮）的
+             整套参数写进笔刷存档，切回秀丽笔时手感被硬边/无压感参数污染 */
+          const patch = {}; patch[key] = val;
+          MTG.brushes.saveParams(MTG.board.brushId, patch);
         }
         $(id + '-v').textContent = el.value;
       };
     };
+    const pctToUnit = v => U.clamp(v / 100, 0.01, 1);
     bindSlider('b-size', 'size');
-    bindSlider('b-opacity', 'opacity');
+    bindSlider('b-opacity', 'opacity', pctToUnit);
     /* 压感相关滑杆/复选已删：它们写的引擎键不存在（N-A8）；压感参数在设置面板「笔刷」页 */
 
     /* 洋葱皮 */
@@ -753,10 +837,26 @@
     MTG.settings.bindActions(acts);
 
     /* 快捷键：表驱动，按键在设置里改 */
+    /* 绘画弹窗（模态）期间禁止的全局动作（S-3）：它们会切换当前镜头/播放头，
+       导致后续笔迹写进别的帧，或直接删掉正在画的镜头。 */
+    const PM_BLOCK = new Set(['cmd.play', 'cmd.prev', 'cmd.next', 'cmd.home', 'cmd.newFrame', 'cmd.saveFrame']);
     document.addEventListener('keydown', e => {
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
       if (MTG.story && MTG.story.sliding) return;      // 放映中按键交给故事板处理
+
+      /* 绘画弹窗打开：切帧/播放/删镜头类快捷键一律不生效（S-3）。
+         放行：工具键、撤销重做、Esc/Enter 会话、Ctrl+S 保存、有选区时的 Delete（删选区内容）。 */
+      if (MTG.sheet && MTG.sheet.pmShot) {
+        const combo0 = MTG.settings.comboOf(e);
+        const aid0 = combo0 ? MTG.settings.actionFor(combo0) : null;
+        const isArrow = /^Arrow(Left|Right|Up|Down)$/.test(e.key);
+        const blockDel = aid0 === 'cmd.del' && !MTG.board.sel;
+        if (isArrow || blockDel || (aid0 && PM_BLOCK.has(aid0))) { e.preventDefault(); return; }
+      }
+      /* 变换会话中方向键属于引擎（移动内容）——宿主不切帧（S-4）。
+         宿主在 document（冒泡）比引擎的 window 监听器先跑，不能用 defaultPrevented 判断。 */
+      if (MTG.board.xf && /^Arrow/.test(e.key)) return;
 
       if (MTG.board.xf && (e.key === 'Enter' || e.key === 'Escape')) {    // 变换中：回车落位 / Esc 放弃
         e.preventDefault();
@@ -845,6 +945,13 @@
     const sources = (info && Array.isArray(info.sources)) ? info.sources
       : (info && info.external ? ['fabula'] : []);
     if (!sources.length) return;
+    /* H-13：时间轴拖拽进行中不重建 DOM —— 否则被拖元素被摘除、拖拽腰斩且位置不落盘。
+       排队等拖拽结束（timeline 的 up 会调 resumeExternal 立即补跑，这里再兜个轮询） */
+    if (MTG.timeline && MTG.timeline.dragging) {
+      externalPending = info || {};
+      setTimeout(flushPendingExternal, 500);
+      return;
+    }
     /* 与切工程互斥；同步进行中到达的广播记下补跑（N-A6/N-B1） */
     if (switchingProject || externalReloading) { externalPending = info || {}; return; }
     if (!MTG.storage.ready) return;
@@ -925,6 +1032,8 @@
     if (curChanged && !MTG.board.dirty) {
       try { await MTG.board.reloadCurrent(true); } catch (err) { console.warn('[app] 重读当前帧失败', err); }
     }
+    /* H-9：被改动的音频要重新解码 —— 只清缓存不重载的话，波形空白且该片段播放无声 */
+    try { await MTG.audio.ensureLoaded(MTG.state.project.clips); } catch (_) {}
     MTG.board.rebuildBackdrop();
     MTG.timeline.render();
     await MTG.assets.render();
@@ -979,6 +1088,7 @@
   function setupAutosave() {
     clearInterval(autosaveTimer);
     const sec = +MTG.settings.get('autosave') || 0;
+    MTG.ui.autosaveSec = sec;        // 只读镜像：设置变更后探针/诊断可确认定时器真的重排了
     if (!sec) return;
     autosaveTimer = setInterval(() => {
       if (!MTG.state.project) return;
@@ -1074,6 +1184,17 @@
     MTG.settings.apply();          // 个性化设置：主题 / 画布底色 / 光标环…
     MTG.radial.init();             // 轮盘菜单
     setupAutosave();
+    /* 设置面板变更 → 宿主侧立即重排（H-1/H-2）：此前 settings.onChange 全库无人订阅，
+       "自动保存改 30 秒"要重启才生效、吸附状态被 apply() 用旧值改回去 */
+    MTG.settings.onChange(() => {
+      setupAutosave();
+      const on = !!MTG.settings.get('snap');
+      MTG.state.snap = on;
+      const top = document.getElementById('snap');
+      if (top && top.checked !== on) top.checked = on;
+      const pane = document.querySelector('[data-k="snap"]');
+      if (pane && pane.checked !== on) pane.checked = on;
+    });
 
     // 不再自动建工程：像 PR 一样，先打开（或新建）工程文件夹
     MTG.state.project = null;

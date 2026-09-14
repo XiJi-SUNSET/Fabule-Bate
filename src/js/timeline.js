@@ -25,7 +25,8 @@
         info: document.getElementById('tl-info')
       };
 
-      /* 滚轮：Ctrl 缩放（以光标为锚），否则横向滚动 */
+      /* 滚轮：Ctrl 缩放（以光标为锚），否则横向滚动（H-3：此前没有 else 分支，
+         工具栏明文承诺的"滚轮横向滚动"完全无反应） */
       TL.el.scroll.addEventListener('wheel', e => {
         if (e.ctrlKey || e.metaKey) {
           e.preventDefault();
@@ -36,7 +37,12 @@
           TL.setZoom(U.clamp(MTG.state.pxPerSec * k, 8, 400));
           const nx = TL.timeToX(t);
           TL.el.scroll.scrollLeft = nx - (e.clientX - rect.left);
+          return;
         }
+        /* deltaX 优先（触控板横向手势）；deltaMode=1/2（行/页）折算成像素 */
+        const unit = e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? 120 : 1);
+        const dx = (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) * unit;
+        if (dx) { e.preventDefault(); TL.el.scroll.scrollLeft += dx; }
       }, { passive: false });
 
       /* 头部与内容垂直滚动同步由 syncHeadScroll() 统一负责（L-3 修复后的
@@ -59,9 +65,13 @@
         scrubbing = true; TL.el.ruler.setPointerCapture(e.pointerId); seek(e);
       });
       TL.el.ruler.addEventListener('pointermove', e => { if (scrubbing) seek(e); });
-      TL.el.ruler.addEventListener('pointerup', e => {
+      const rulerEnd = e => {
         scrubbing = false; try { TL.el.ruler.releasePointerCapture(e.pointerId); } catch (err) {}
-      });
+      };
+      TL.el.ruler.addEventListener('pointerup', rulerEnd);
+      /* M-3：pointercancel（笔/触屏常见）也要复位 —— 否则 scrubbing 卡在 true，
+         此后不按键悬停标尺也会拖走播放头 */
+      TL.el.ruler.addEventListener('pointercancel', rulerEnd);
 
       /* 从素材库拖入 */
       TL.el.tracks.addEventListener('dragover', e => {
@@ -240,20 +250,26 @@
         to = ins > fromIdx ? ins - 1 : ins;
         items.forEach((it, i) => it.classList.toggle('drop-before', i === to && to !== fromIdx));
       };
-      const up = ev => {
+      /* M-2：up/cancel 统一收尾（此前只监听 pointerup：pointercancel 时监听器残留、
+         .drop-before 红线残留、后续指针事件继续改 to） */
+      const finish = (ev, commit) => {
         grip.removeEventListener('pointermove', move);
-        grip.removeEventListener('pointerup', up);
+        grip.removeEventListener('pointerup', onUp);
+        grip.removeEventListener('pointercancel', onCancel);
         try { grip.releasePointerCapture(ev.pointerId); } catch (err) {}
         items.forEach(it => it.classList.remove('drop-before'));
-        if (to !== fromIdx) {
+        if (commit && to !== fromIdx) {
           const moved = p.tracks.splice(fromIdx, 1)[0];
           p.tracks.splice(to, 0, moved);
           MTG.markDirty();
         }
         MTG.render();
       };
+      const onUp = ev => finish(ev, true);
+      const onCancel = ev => finish(ev, false);
       grip.addEventListener('pointermove', move);
-      grip.addEventListener('pointerup', up);
+      grip.addEventListener('pointerup', onUp);
+      grip.addEventListener('pointercancel', onCancel);
     },
 
     renderTracks() {
@@ -294,19 +310,25 @@
             TL.marquee.style.height = (y1 - y0) + 'px';
             MTG.state.selectedClipIds = TL.selectByRect(x0, x1, y0, y1);
           };
-          const up = ev => {
+          /* M-2：cancel 与 up 统一收尾；取消时不改播放头（框选被系统打断 ≠ 单击） */
+          const end = (ev, canceled) => {
             row.removeEventListener('pointermove', mv);
-            row.removeEventListener('pointerup', up);
+            row.removeEventListener('pointerup', onUp);
+            row.removeEventListener('pointercancel', onCancel);
             try { row.releasePointerCapture(ev.pointerId); } catch (err) {}
             TL.marquee.style.display = 'none';
             if (active) { TL.syncSelection(); return; }      // 框选结束，保留选择
+            if (canceled) return;
             // 单击：定位 + 清空选择
             MTG.state.selectedClipIds = new Set();
             TL.syncSelection();
             seek(ev);
           };
+          const onUp = ev => end(ev, false);
+          const onCancel = ev => end(ev, true);
           row.addEventListener('pointermove', mv);
-          row.addEventListener('pointerup', up);
+          row.addEventListener('pointerup', onUp);
+          row.addEventListener('pointercancel', onCancel);
         });
         /* 分镜轨空白处双击 = 在该时刻新建一帧 */
         row.addEventListener('dblclick', e => {
@@ -332,7 +354,8 @@
         + (MTG.state.selectedClipIds.has(c.id) ? ' selected' : '');
       el.dataset.id = c.id;
       el.style.left = TL.timeToX(c.start) + 'px';
-      el.style.width = Math.max(6, TL.timeToX(c.dur)) + 'px';
+      const clipW = Math.max(6, TL.timeToX(c.dur));
+      el.style.width = clipW + 'px';
 
       if (c.kind === 'audio') {
         const cv = document.createElement('canvas');
@@ -358,6 +381,9 @@
         const h = document.createElement('div');
         h.className = 'clip-handle ' + side;
         h.dataset.side = side;
+        /* H-8：窄块上两个 7px 手柄会整个叠住（命中恒为右侧那个 → 拖不动也左裁不了）：
+           手柄宽随块宽收缩、各占 1/3，保证两端都能命中 */
+        h.style.width = Math.max(3, Math.min(7, Math.floor(clipW / 3))) + 'px';
         el.appendChild(h);
       });
 
@@ -379,6 +405,22 @@
         if (c.kind === 'board' && c.boardId) MTG.setPlayhead(c.start + 0.001);
       });
       return el;
+    },
+
+    /* H-12：某帧内容被重写（存帧/外部换图）后，把时间轴上引用它的片段缩略图重画。
+       此前 flush 里 dropThumb 清了缓存，但没人重设 <img src> —— 缩略图停在旧画面 */
+    refreshBoardThumb(bid) {
+      TL.el.tracks.querySelectorAll('.clip').forEach(el => {
+        const c = MTG.findClip(el.dataset.id);
+        if (c && c.boardId === bid) {
+          const img = el.querySelector('img.clip-thumb');
+          if (img) {
+            img.classList.remove('thumb-miss');
+            img.removeAttribute('src');
+            TL.fillThumb(img, c);
+          }
+        }
+      });
     },
 
     async fillThumb(img, c) {
@@ -540,13 +582,18 @@
     },
 
     /* ── 吸附 ── */
-    snapTime(t, soft) {
+    /* excludeId：拖动中的片段必须排除自身（H-6）——此前自身 start/end 也在候选集里，
+       拖到自己边缘就被吸住：表现为"8px 死区 + 十几像素一跳的台阶式抖动" */
+    snapTime(t, soft, excludeId) {
       if (!MTG.state.snap) return Math.max(0, t);
       const p = MTG.state.project;
       if (!p) return Math.max(0, t);          // 未打开工程：没有可吸附的片段
       const tol = (soft ? 6 : 8) / MTG.state.pxPerSec;
       const cands = [0, MTG.state.playhead];
-      p.clips.forEach(c => { cands.push(c.start, c.start + c.dur); });
+      p.clips.forEach(c => {
+        if (excludeId && c.id === excludeId) return;
+        cands.push(c.start, c.start + c.dur);
+      });
       let best = t, bd = tol;
       cands.forEach(v => { const d = Math.abs(v - t); if (d < bd) { bd = d; best = v; } });
       return Math.max(0, best);
@@ -727,6 +774,7 @@
 
       try { el.setPointerCapture(e.pointerId); } catch (err) {}
       el.classList.add('dragging');
+      TL.dragging = true;      // H-13：拖动会话标志 —— 外部同步（Agent 广播）期间不重建 DOM
 
       const move = ev => {
         const dt = (ev.clientX - startX) / MTG.state.pxPerSec;
@@ -735,7 +783,10 @@
           d = Math.max(d, -o.offset);                 // 不能裁到素材起点之前
           d = Math.max(d, bounds.lo - o.start);       // 不能裁进左邻居
           d = Math.min(d, o.dur - 0.1);
-          const ns = Math.max(0, o.start + d);
+          let ns = Math.max(0, o.start + d);
+          if (MTG.state.snap) ns = TL.snapTime(ns, false, clip.id);   // H-7：左边缘参与吸附
+          ns = Math.max(ns, 0, o.start - o.offset, bounds.lo);        // 吸附后重新夹定
+          if (ns > o.start + o.dur - 0.1) ns = o.start + o.dur - 0.1;
           const real = ns - o.start;                  // 受各处限制后的实际位移
           clip.start = ns;
           clip.offset = Math.max(0, o.offset + real);
@@ -744,7 +795,9 @@
           const limitByAsset = assetDur - o.offset;
           const limitByNext = bounds.hi - o.start;    // 右边缘不能越过右邻居
           const maxDur = Math.min(limitByAsset, limitByNext);
-          clip.dur = U.clamp(o.dur + dt, 0.1, isFinite(maxDur) ? Math.max(0.1, maxDur) : 1e6);
+          let nd = o.dur + dt;
+          if (MTG.state.snap) nd = TL.snapTime(o.start + nd, false, clip.id) - o.start;   // H-7：右边缘参与吸附
+          clip.dur = U.clamp(nd, 0.1, isFinite(maxDur) ? Math.max(0.1, maxDur) : 1e6);
         } else {
           /* 换位：拖动越过某个邻居的中点 = 想换顺序。
              在该轨内重排并重新顺位（首尾相接），然后把拖拽基准重置到新位置，
@@ -756,10 +809,22 @@
             let ins = 0;
             for (const c of others) if (mid > c.start + c.dur / 2) ins++;
             if (ins !== lastIns) {
-              const arr = others.slice();
-              arr.splice(ins, 0, clip);
-              let acc = arr[0] === clip ? want : arr[0].start;
-              arr.forEach(s => { s.start = acc; acc += s.dur; });
+              /* H-4：换位 = 只交换「被拖片段」与「被跨过的邻居」的槽位。
+                 旧实现把整轨首尾相接重排：未触碰的片段被挪走、用户留的间隔被永久删除。 */
+              const dir = ins > lastIns ? 1 : -1;
+              const target = others[dir > 0 ? ins - 1 : ins];
+              if (target) {
+                const aStart = clip.start;
+                clip.start = target.start;
+                target.start = aStart;
+                /* 两段时长不等时交换后可能压到彼此/邻居：把冲突的一方顺推到最近空位 */
+                if (TL.conflicts(clip.trackId, clip.start, clip.dur, clip.id)) {
+                  clip.start = TL.freeStart(clip.trackId, clip.start, clip.dur, clip.id);
+                }
+                if (TL.conflicts(target.trackId, target.start, target.dur, target.id)) {
+                  target.start = TL.freeStart(target.trackId, target.start, target.dur, target.id);
+                }
+              }
               lastIns = ins;
               reordered = true;
               TL.refreshTrack(clip.trackId);
@@ -771,7 +836,7 @@
             }
           }
           let ns = Math.max(0, o.start + dt);
-          if (MTG.state.snap) ns = TL.snapTime(ns);
+          if (MTG.state.snap) ns = TL.snapTime(ns, false, clip.id);
           ns = Math.max(ns, bounds.lo);                                  // 夹在左邻居之后
           if (isFinite(bounds.hi)) ns = Math.min(ns, bounds.hi - clip.dur); // 夹在右邻居之前
           if (groupRange) ns = U.clamp(ns, o.start + groupRange.dmin, o.start + groupRange.dmax);
@@ -790,6 +855,7 @@
               const k = clip.kind === 'audio' ? 'audio' : 'board';
               if (tr && tr.kind === k && tr.id !== clip.trackId) {
                 clip.trackId = tr.id;
+                row.appendChild(el);           // H-5：块跟随指针换行（此前纵向不动、松手瞬移）
                 lastIns = insOf();
                 bounds = TL.neighborBounds(tr.id, o.start, o.start + o.dur, clip.id);
                 if (groupItems) {                      // 组内成员留在原轨，只需更新被拖片段的轨
@@ -835,6 +901,8 @@
           (group && group.some(g => g.start !== g.c.start));
         if (changed) MTG.markDirty();
         TL.render();
+        TL.dragging = false;     // H-13：拖动结束，积压的外部同步可以补跑
+        if (MTG.app && MTG.app.resumeExternal) { try { MTG.app.resumeExternal(); } catch (_) {} }
       };
       el.addEventListener('pointermove', move);
       el.addEventListener('pointerup', up);

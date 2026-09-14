@@ -44,6 +44,7 @@
     <div class="tb-spacer"></div>
 
     <div class="tb-group">
+      <span id="save-state" class="save-state" data-st="idle" title="保存状态">—</span>
       <button id="btn-save" class="btn" title="保存工程（Ctrl+S）">保存</button>
       <button id="btn-export" class="btn ghost" title="导出工程 JSON / 图片序列">导出</button>
       <button id="btn-theme" class="btn icon ghost" title="切换明暗"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="7.5"/><path d="M12 4.5a7.5 7.5 0 0 0 0 15z" fill="currentColor" stroke="none"/></svg></button>
@@ -65,6 +66,7 @@
         <span class="ph-title">素材库</span>
         <div class="ph-actions">
           <button id="btn-import-media" class="btn tiny" title="导入图片 / 音频到工程文件夹">导入</button>
+          <button id="btn-del-selected" class="btn tiny ghost" disabled title="先点选素材（Ctrl / Shift 可多选）">删除选中</button>
           <button id="btn-rescan" class="btn tiny ghost" title="重新扫描工程文件夹">扫描</button>
           <button id="btn-add-group" class="btn tiny ghost" title="新建素材分组">＋ 分组</button>
         </div>
@@ -233,7 +235,7 @@
             <div id="brush-list" class="brush-list"></div>
             <div id="brush-params"></div>
             <div class="slider-row"><label>大小</label><input id="b-size" type="range" min="1" max="200" value="14"><span id="b-size-v">14</span></div>
-            <div class="slider-row"><label>不透明</label><input id="b-opacity" type="range" min="5" max="100" value="100"><span id="b-opacity-v">100</span></div>
+            <div class="slider-row"><label>不透明</label><input id="b-opacity" type="range" min="1" max="100" value="100"><span id="b-opacity-v">100</span></div>
             <!-- 压感参数（死区/饱和点/速度参考）在 设置 → 笔刷 页；这里不放无消费者的滑杆（N-A8） -->
           </div>
 

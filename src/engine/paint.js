@@ -2539,7 +2539,14 @@ function applySavedBrushParams(id) {
     const bp = p && p.get('brushParams');
     const saved = bp && bp[id];
     if (!saved || typeof saved !== 'object') return;
-    for (const k in saved) if (k in P) P[k] = saved[k];
+    for (const k in saved) {
+      if (!(k in P)) continue;
+      let v = saved[k];
+      /* 旧宿主把百分数滑杆（5~100）直写进 0.01~1 的 opacity 并持久化：
+         读回时修正成 0.01~1（S-1），否则 u_opacity 饱和、笔画永远实心 */
+      if (k === 'opacity' && typeof v === 'number' && v > 1) v = Math.min(1, Math.max(0.01, v / 100));
+      P[k] = v;
+    }
   } catch (_) {}
 }
 
@@ -2700,6 +2707,7 @@ async function loadImageToLayer(src, opts) {
     c.drawImage(img, (DW - sw) / 2, (DH - sh) / 2);
   }
   if (drawing) endStroke();
+  if (xf.on) xfCancel();     /* 换图不得携带变换会话（S-4）：旧内容会以变换框浮在新图上 */
   if (layer !== o.layer) setLayer(o.layer);
   /* 借 exportTex 中转：uploadCanvasTex 会把纹理重写成 canvas 尺寸的 RGBA8，
      不能直接怼到图层纹理上（丢浮点精度、且尺寸契约会被破坏） */
@@ -3395,7 +3403,12 @@ window.__fabulaEngine = {
   setColor: (h) => { color = hexRgb(h); notifyColor(); },
   onColor: null,                          // 取色/换色时回调（色板 UI 同步）
   getParams: () => Object.assign({}, P),
-  setParam(k, v) { if (k in P) P[k] = v; if (k in PEN) PEN[k] = v; },
+  /* opacity 契约是 0.01~1：>1 必是旧宿主百分数直写的污染值，落回比例（S-1） */
+  setParam(k, v) {
+    if (k === 'opacity' && typeof v === 'number' && v > 1) v = Math.min(1, Math.max(0.01, v / 100));
+    if (k in P) P[k] = v;
+    if (k in PEN) PEN[k] = v;
+  },
 
   /* ---- 图层：bg = 底色层，fg = 线稿层（montage 双 canvas 的等价物） ---- */
   LAYER_IDS,
@@ -3496,7 +3509,11 @@ window.__paintlab = {
   },
   resetCounters() { strokeInfo.dabs = 0; strokeInfo.segments = 0; strokeInfo.points = 0; },
   setTool,
-  setParam(k, v) { if (k in P) P[k] = v; if (k in PEN) PEN[k] = v; },
+  setParam(k, v) {
+    if (k === 'opacity' && typeof v === 'number' && v > 1) v = Math.min(1, Math.max(0.01, v / 100));
+    if (k in P) P[k] = v;
+    if (k in PEN) PEN[k] = v;
+  },
   setColor(r, g, b) { color = [r, g, b]; },
   getParams() { return Object.assign({}, P); },
   seedRng,

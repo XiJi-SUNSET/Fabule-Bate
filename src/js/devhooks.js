@@ -571,13 +571,16 @@
         }
         /* 确保存在一条含 ≥2 片段的轨道（冒烟环境工程常为空） */
         const seeded = p.tracks.some(tr => p.clips.filter(c => c.trackId === tr.id).length >= 2);
+        let seededByProbe = false;
         if (!seeded) {
+          seededByProbe = true;
           if (!p.tracks.length) p.tracks.push({ id: 'tr-v', kind: 'board', name: '画面' });
           const tid = p.tracks[0].id;
+          /* 留出间隔（1s / 2s）：H-4 断言"换位只交换两段、不压紧整轨"需要间隔存在 */
           p.clips.push(
             { id: 'cl-a', trackId: tid, kind: 'board', boardId: null, name: 'A', start: 0, dur: 2, offset: 0, meta: {} },
-            { id: 'cl-b', trackId: tid, kind: 'board', boardId: null, name: 'B', start: 2, dur: 2, offset: 0, meta: {} },
-            { id: 'cl-c', trackId: tid, kind: 'board', boardId: null, name: 'C', start: 4, dur: 2, offset: 0, meta: {} }
+            { id: 'cl-b', trackId: tid, kind: 'board', boardId: null, name: 'B', start: 3, dur: 2, offset: 0, meta: {} },
+            { id: 'cl-c', trackId: tid, kind: 'board', boardId: null, name: 'C', start: 7, dur: 2, offset: 0, meta: {} }
           );
           MTG.state.selectedClipIds = new Set();
           MTG.timeline.render();
@@ -589,28 +592,51 @@
         }
         if (!list) { out.error = '没有含 ≥2 个片段的轨道'; return JSON.stringify(out); }
 
-        const c1 = list[0], c2 = list[1];
+        const c1 = list[0], c2 = list[1], c3 = list[2];
         out.before = list.map(c => c.id).join(',');
         const el = MTG.timeline.el.tracks.querySelector('.clip[data-id="' + c1.id + '"]');
         if (!el) { out.error = 'clip 元素缺失'; return JSON.stringify(out); }
 
         const r = el.getBoundingClientRect();
         const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-        const fire = (type, x, y) => el.dispatchEvent(new PointerEvent(type, {
+        const fire = (node, type, x, y) => node.dispatchEvent(new PointerEvent(type, {
           bubbles: true, cancelable: true, pointerId: 99, pointerType: 'mouse',
           button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: x, clientY: y
         }));
-        fire('pointerdown', cx, cy);
+        fire(el, 'pointerdown', cx, cy);
         /* 拖到"越过 c2 中点"所需的像素：两中点距离 + 余量 */
         const need = ((c2.start + c2.dur / 2) - (c1.start + c1.dur / 2)) * MTG.state.pxPerSec + 30;
-        for (let k = 1; k <= 6; k++) fire('pointermove', cx + need * k / 6, cy);
-        fire('pointerup', cx + need, cy);
+        for (let k = 1; k <= 6; k++) fire(el, 'pointermove', cx + need * k / 6, cy);
+        fire(el, 'pointerup', cx + need, cy);
 
         const after = p.clips.filter(c => c.trackId === trackId).sort((a, b) => a.start - b.start).map(c => c.id).join(',');
         out.after = after;
         out.reordered = out.before !== out.after;
         out.c1Start = +c1.start.toFixed(2);
         out.pxPerSec = MTG.state.pxPerSec;
+        /* H-4：换位只交换前两段 —— 第三段（cl-c）与它的间隔必须原地不动 */
+        if (seededByProbe && c3) {
+          out.c3Start = +c3.start.toFixed(2);
+          out.thirdUntouched = Math.abs(c3.start - 7) < 1e-6;
+        }
+
+        /* H-6：吸附候选不得含被拖片段自身（旧 bug：自身候选让拖拽被吸住 →
+           8px 死区 + 十几像素一跳的台阶抖动）。
+           换位后布局：cl-b(≈1-3)、cl-a(3-5)、cl-c(7-9)。
+           把 cl-a 向右拖 0.4s：落点在 5~7 的空档，两侧边界都夹不到 —— 位置必须连续跟手到 ≈3.4。
+           旧代码会把每次移动吸回"自身上一帧的位置"，停在 ≈3.0 附近不动。 */
+        const el2 = MTG.timeline.el.tracks.querySelector('.clip[data-id="' + c1.id + '"]');
+        if (el2) {
+          MTG.state.snap = true;
+          const r2 = el2.getBoundingClientRect();
+          const x2 = r2.left + r2.width / 2, y2 = r2.top + r2.height / 2;
+          const small = 0.4 * MTG.state.pxPerSec;
+          fire(el2, 'pointerdown', x2, y2);
+          for (let k = 1; k <= 4; k++) fire(el2, 'pointermove', x2 + small * k / 4, y2);
+          out.smallDrag = +c1.start.toFixed(2);
+          out.snapFreeOK = Math.abs(c1.start - 3.4) < 0.15;   // ≈3.4 = 跟手；≈3.0 = 被自身吸住
+          fire(el2, 'pointerup', x2 + small, y2);
+        }
       } catch (e) {
         out.error = (e && e.message) || String(e);
       } finally {
@@ -755,9 +781,13 @@
       return JSON.stringify(out);
     },
 
-    /* 分组重命名探针：dblclick 分组名 → 输入框出现？→ 提交 → 模型写回？ */
+    /* 分组重命名探针：dblclick 分组名 → 输入框出现？→ 提交（含中文输入法路径）→ 模型写回？
+       场景 A：直接输入 + 回车（非组合）；
+       场景 B：输入法组合中按回车（isComposing）不得把上屏前的旧值写回；
+               组合结束（compositionend）后自动提交上屏后的新值。 */
     async groupRenameProbe() {
       const out = {};
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
       try {
         let p = MTG.state.project;
         if (!p) {
@@ -777,20 +807,259 @@
         const nm = document.querySelector('.group-head[data-gid="g-probe"] .g-name');
         if (!nm) { out.error = '找不到分组名元素（render 没产出该分组？）'; return JSON.stringify(out); }
         out.found = true;
+
+        /* —— 场景 A：直接输入 —— */
         nm.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-        await new Promise(r => setTimeout(r, 80));
+        await sleep(80);
         const input = nm.querySelector('.g-rename');
         out.inputAppeared = !!input;
         if (input) {
           input.value = '新组名';
-          /* 真实回车路径（onkeydown → input.blur() → commit） */
+          /* 真实回车路径：onkeydown → commit（done 防重入） */
           input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-          await new Promise(r => setTimeout(r, 120));
-          const g = MTG.state.project.groups.find(x => x.id === 'g-probe');
-          out.nameAfter = g && g.name;
-          out.renamed = !!(g && g.name === '新组名');
-          const nm2 = document.querySelector('.group-head[data-gid="g-probe"] .g-name');
-          out.domAfter = nm2 && nm2.textContent;
+          await sleep(120);
+          const g = p.groups.find(x => x.id === 'g-probe');
+          out.nameAfterA = g && g.name;
+          out.renamedA = !!(g && g.name === '新组名');
+          const nmA = document.querySelector('.group-head[data-gid="g-probe"] .g-name');
+          out.domAfterA = nmA && nmA.textContent;
+        }
+
+        /* —— 场景 B：中文输入法（组合中回车=上屏，不能提交旧值） —— */
+        const nm2 = document.querySelector('.group-head[data-gid="g-probe"] .g-name');
+        if (nm2) {
+          nm2.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+          await sleep(80);
+          const input2 = nm2.querySelector('.g-rename');
+          out.inputAppearedB = !!input2;
+          if (input2) {
+            const diag = {};
+            input2.addEventListener('compositionstart', () => { diag.gotStart = true; });
+            input2.addEventListener('compositionend', () => { diag.gotEnd = true; });
+            input2.addEventListener('keydown', (ev) => {
+              diag.kdIsComposing = ev.isComposing; diag.kdKey = ev.key; diag.kdKeyCode = ev.keyCode;
+            });
+            input2.value = out.nameAfterA;         // 上屏前：value 仍是旧名
+            input2.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+            input2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }));
+            await sleep(40);
+            const g1 = p.groups.find(x => x.id === 'g-probe');
+            out.imeGuard = !!(g1 && g1.name === out.nameAfterA);   // 组合中按回车不得提交
+            input2.value = '输入法名';             // 浏览器在 compositionend 时同步上屏文本
+            input2.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '输入法名' }));
+            diag.valueAtEnd = input2.value;
+            diag.stillInDom = (nm2.querySelector('.g-rename') === input2);
+            await sleep(200);
+            const g2 = p.groups.find(x => x.id === 'g-probe');
+            out.nameAfterB = g2 && g2.name;
+            out.renamedB = !!(g2 && g2.name === '输入法名');
+            const nmB = document.querySelector('.group-head[data-gid="g-probe"] .g-name');
+            out.domAfterB = nmB && nmB.textContent;
+            /* 逃生验证：非组合的普通回车必须能提交（验证 handler 链路本身没断） */
+            if (!out.renamedB) {
+              const input3 = nmB && nmB.querySelector('.g-rename');
+              if (input3) {
+                input3.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                await sleep(150);
+                const g3 = p.groups.find(x => x.id === 'g-probe');
+                out.escapeCommit = !!(g3 && g3.name === '输入法名');
+              } else out.escapeCommit = 'no-input';
+            }
+            out.bDiag = diag;
+          }
+        }
+      } catch (e) { out.error = (e && e.message) || String(e); }
+      return JSON.stringify(out);
+    },
+
+    /* 素材生命周期探针（覆盖用户三连：导入两条 / 删除没用 / 删了回来）：
+       1) 磁盘放两个文件（模拟历史遗留的旧副本 + 本次新导入）；
+       2) mergeImported 只补录新文件 → 素材库不应把遗留文件一并收进来；
+       3) 建片段后删除素材 → 片段连带移除 + 磁盘副本消失（回收站/删除成功）；
+       4) 再扫描 → 已删素材不复活；未入库的遗留文件只在主动扫描时出现（既有语义）。 */
+    async assetLifecycleProbe(dirUrl) {
+      const out = { steps: [] };
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      try {
+        if (!window.fabula) throw new Error('非 Electron 环境：window.fabula 不存在');
+        if (!dirUrl) throw new Error('缺少探针目录');
+        try { await window.fabula.project.create(dirUrl, '素材探针'); out.steps.push('create'); }
+        catch (_) { await window.fabula.project.openDir(dirUrl); out.steps.push('openDir'); }
+        /* 渲染端存储层切到桌面模式（探针特权：绕过系统对话框） */
+        MTG.storage.mode = 'electron';
+        MTG.storage.dirName = String(dirUrl).split('/').filter(Boolean).pop() || 'probe';
+        const p = MTG.state.project = MTG.newProject('素材探针');
+        MTG.migrateProject(p);
+        if (!p.tracks.some(t => t.kind === 'audio')) {
+          p.tracks.push({ id: 'tr-probe-a', name: '音频 P', kind: 'audio', h: 62, muted: false });
+        }
+
+        const bytes = () => new Blob([new Uint8Array([1, 2, 3, 4])], { type: 'audio/mpeg' });
+        await MTG.storage.writeFile('assets/audio/legacy-old.mp3', bytes());  // 历史遗留副本
+        await MTG.storage.writeFile('assets/audio/fresh-new.mp3', bytes());   // 本次导入
+        out.mediaBefore = (await MTG.storage.listMedia()).map(f => f.path);
+
+        /* 导入补录：只收 fresh-new，legacy-old 不得跟着进来 */
+        out.mergedCount = await MTG.assets.mergeImported(['assets/audio/fresh-new.mp3']);
+        out.assetsAfterMerge = p.assets.map(a => a.name);
+        out.onlyImported = p.assets.length === 1 && p.assets[0].path === 'assets/audio/fresh-new.mp3';
+
+        /* 把新素材放上轨道（造引用片段） */
+        const fresh = p.assets.find(a => a.path === 'assets/audio/fresh-new.mp3');
+        const tr = p.tracks.find(t => t.kind === 'audio');
+        p.clips.push({ id: 'cl-probe', trackId: tr.id, kind: 'audio', assetId: fresh.id, name: fresh.name, start: 0, dur: 3, offset: 0, gain: 1 });
+        await sleep(30);
+
+        /* 删除素材：片段连带移除 + 磁盘副本消失 */
+        await MTG.assets.removeItems([fresh]);
+        out.assetsAfterRemove = p.assets.map(a => a.name);
+        out.clipsAfterRemove = p.clips.length;
+        await sleep(150);                     // 等磁盘删除（回收站/删除）落定
+        out.mediaAfterRemove = (await MTG.storage.listMedia()).map(f => f.path);
+        out.diskGone = !out.mediaAfterRemove.includes('assets/audio/fresh-new.mp3');
+        out.clipGone = p.clips.length === 0;
+
+        /* 再扫描：已删素材不得复活 */
+        await MTG.assets.rescan();
+        out.assetsAfterRescan = p.assets.map(a => a.name);
+        out.noResurrect = !out.assetsAfterRescan.includes('fresh-new.mp3');
+
+        /* 清理遗留文件（避免污染后续用例） */
+        const legacy = p.assets.find(a => a.path === 'assets/audio/legacy-old.mp3');
+        if (legacy) {
+          p.assets = p.assets.filter(a => a !== legacy);
+          await MTG.storage.deleteFile('assets/audio/legacy-old.mp3');
+        }
+        out.ok = !!(out.onlyImported && out.diskGone && out.clipGone && out.noResurrect);
+      } catch (e) { out.error = (e && e.message) || String(e); }
+      return JSON.stringify(out);
+    },
+
+    /* 交互修复探针（R4 · S 批次）：不透明度单位换算 / 图层切换接引擎 /
+       绘画弹窗作用域 / 删镜头清理链（二次确认 + 帧文件回收）。
+       需要 storage 就绪：自建临时工程（探针特权 —— 直接置 electron 模式，绕过系统对话框）。 */
+    async interactionProbe(dirUrl) {
+      const out = { steps: [] };
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      try {
+        if (!window.fabula) throw new Error('非 Electron 环境：window.fabula 不存在');
+        if (!dirUrl) throw new Error('缺少探针目录');
+        try { await window.fabula.project.create(dirUrl, '交互探针'); out.steps.push('create'); }
+        catch (_) { await window.fabula.project.openDir(dirUrl); out.steps.push('openDir'); }
+        MTG.storage.mode = 'electron';
+        MTG.storage.dirName = String(dirUrl).split('/').filter(Boolean).pop() || 'probe';
+        const p = MTG.state.project = MTG.newProject('交互探针');
+        MTG.migrateProject(p);
+        if (!window.__fabulaEngine) throw new Error('绘画引擎未加载');
+
+        /* —— S-1 不透明度：滑杆百分数 ↔ 引擎 0.01~1 —— */
+        const el = document.getElementById('b-opacity');
+        const setSlider = async (v) => { el.value = String(v); el.oninput(); await sleep(10); return MTG.board.bp.opacity; };
+        out.op20 = await setSlider(20);
+        out.op100 = await setSlider(100);
+        out.op1 = await setSlider(1);
+        out.opacityScaleOK = Math.abs(out.op20 - 0.2) < 1e-6 && Math.abs(out.op100 - 1) < 1e-6 && Math.abs(out.op1 - 0.01) < 1e-6;
+        MTG.board.bp.opacity = 20;                       // 直写：引擎 setParam 应把 >1 当污染值落回比例
+        out.clampOK = Math.abs(MTG.board.bp.opacity - 0.2) < 1e-6;
+        MTG.brushes.saveParams('pen', { opacity: 50 });  // 旧版本持久化的污染值
+        MTG.board.setTool('eraser'); await sleep(30);
+        MTG.board.setBrush('pen'); await sleep(60);      // 切回：applySavedBrushParams 读取时修正
+        out.reapply = MTG.board.bp.opacity;
+        MTG.ui.syncBrushSliders();
+        out.sliderShown = +el.value;
+        out.sanitizeOK = out.reapply > 0 && out.reapply <= 1 && out.sliderShown === 50;
+        MTG.board.bp.opacity = 1; MTG.ui.syncBrushSliders();
+
+        /* —— S-2 图层切换必须到达引擎 —— */
+        const engLayer = () => (window.__fabulaEngine && window.__fabulaEngine.layer)
+          ? window.__fabulaEngine.layer()
+          : (window.__paintlab && window.__paintlab.getLayer ? window.__paintlab.getLayer() : null);
+        MTG.board.setLayer('bg');
+        out.engineLayerBg = engLayer();
+        const fgBtn = document.querySelector('.layer-switch .layer[data-layer="fg"]');
+        if (fgBtn) fgBtn.click();
+        await sleep(30);
+        out.engineLayerFg = engLayer();
+        out.layerOK = out.engineLayerBg === 'bg' && out.engineLayerFg === 'fg' && MTG.state.layer === 'fg';
+
+        /* 造帧文件 + 镜头（弹窗与删镜头共用） */
+        const mkBoard = async (id, name) => {
+          const cvs = document.createElement('canvas'); cvs.width = 1280; cvs.height = 720;
+          const blob = await new Promise(res => cvs.toBlob(res, 'image/png'));
+          await MTG.storage.writeFile('boards/' + id + '.png', blob);
+          const b = { id, name, path: 'boards/' + id + '.png', group: null };
+          p.boards.push(b);
+          return b;
+        };
+        const track = p.tracks.find(t => t.kind === 'board') || p.tracks[0];
+        const b1 = await mkBoard('bd-probe-m', '弹窗帧');
+        const clip1 = { id: 'cl-probe-m', trackId: track.id, kind: 'board', boardId: b1.id, name: '弹窗镜头', start: 0, dur: 3, offset: 0 };
+        p.clips.push(clip1);
+        MTG.state.selectedClipIds = new Set([clip1.id]);
+        MTG.ui.setView('sheet');                         // 弹窗在分镜表视图打开（更贴近 S-6 场景）
+
+        /* —— S-3 绘画弹窗期间：方向键 / Delete / 视图切换都不得改变工作台状态 —— */
+        await MTG.sheet.openPaint(clip1);
+        await sleep(180);
+        out.modalOpen = !!MTG.sheet.pmShot;
+        const ph0 = MTG.state.playhead, bid0 = MTG.state.currentBoardId;
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+        await sleep(60);
+        out.playheadFrozen = MTG.state.playhead === ph0 && MTG.state.currentBoardId === bid0;
+        const delCombo = MTG.settings.comboOf(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+        out.delAid = delCombo ? MTG.settings.actionFor(delCombo) : null;
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+        await sleep(60);
+        out.clipAlive = p.clips.some(x => x.id === clip1.id);
+        MTG.ui.setView('timeline');                      // 试图切走视图：应被弹窗挡住
+        out.viewBlocked = !document.getElementById('view-sheet').classList.contains('hidden');
+        out.modalOK = !!(out.modalOpen && out.playheadFrozen && out.clipAlive && out.viewBlocked);
+        await MTG.sheet.closePaint(false);
+        await sleep(150);
+
+        /* —— S-7 删镜头：二次确认（首次不删）+ 帧条目/磁盘文件一起清 —— */
+        const b2 = await mkBoard('bd-probe-d', '待删帧');
+        const clip2 = { id: 'cl-probe-d', trackId: track.id, kind: 'board', boardId: b2.id, name: '待删镜头', start: 5, dur: 3, offset: 0 };
+        p.clips.push(clip2);
+        MTG.state.selectedClipIds = new Set([clip2.id]);
+        await MTG.sheet.delShot();                       // 第一次：进入确认态
+        out.delArmed = MTG.sheet._delArm === clip2.id && p.clips.some(x => x.id === clip2.id);
+        await MTG.sheet.delShot();                       // 第二次：执行
+        await sleep(300);
+        out.delClipGone = !p.clips.some(x => x.id === clip2.id);
+        out.delBoardGone = !p.boards.some(x => x.id === b2.id);
+        const media = (await MTG.storage.listMedia()).map(f => f.path);
+        out.delFileGone = !media.includes('boards/bd-probe-d.png');
+        out.delShotOK = !!(out.delArmed && out.delClipGone && out.delBoardGone && out.delFileGone);
+
+        /* H-14：并发 render 不得渲染出重复条目（代际令牌） */
+        await Promise.all([MTG.assets.render(), MTG.assets.render()]);
+        await sleep(120);
+        const itemCount = document.querySelectorAll('#asset-list .asset-item').length;
+        const dataCount = MTG.assets.allItems().length;
+        out.renderItemCount = itemCount;
+        out.renderDataCount = dataCount;
+        out.renderConcurrentOK = itemCount === dataCount;
+
+        /* 清理探针产物（工程目录留作复用） */
+        try { await MTG.storage.deleteFile('boards/bd-probe-m.png'); } catch (_) {}
+        p.boards = p.boards.filter(x => x.id !== b1.id);
+        p.clips = p.clips.filter(x => x.id !== clip1.id);
+
+        out.ok = !!(out.opacityScaleOK && out.clampOK && out.sanitizeOK && out.layerOK && out.modalOK && out.delShotOK && out.renderConcurrentOK);
+      } catch (e) { out.error = (e && e.message) || String(e); }
+      return JSON.stringify(out);
+    },
+
+    /* 导入命名探针：模型条目（显示名/路径）与磁盘实际文件的对照 */
+    async importNamingProbe() {
+      const out = {};
+      try {
+        out.assets = ((MTG.state.project && MTG.state.project.assets) || [])
+          .map(a => a.kind + ' | ' + a.name + ' || ' + a.path);
+        if (MTG.storage.ready && MTG.storage.listMedia) {
+          const list = await MTG.storage.listMedia();
+          out.media = list.map(f => f.path);
         }
       } catch (e) { out.error = (e && e.message) || String(e); }
       return JSON.stringify(out);
