@@ -92,7 +92,7 @@
   }
   function shotText(s) {
     const d = s.description || {};
-    return [d.content, d.dialogue, d.notes].filter(Boolean).join('　');   // 备注在 description.notes（原 s.note 恒 undefined，L-18）
+    return [d.content, d.dialogue, d.remark || d.notes].filter(Boolean).join('　');   // 备注字段：remark（R5-13，notes 为旧别名）
   }
 
   /* ══════════ 故事板导出（fabula 工程模型：shots） ══════════ */
@@ -635,6 +635,12 @@
           for (let k = 1; k <= 4; k++) fire(el2, 'pointermove', x2 + small * k / 4, y2);
           out.smallDrag = +c1.start.toFixed(2);
           out.snapFreeOK = Math.abs(c1.start - 3.4) < 0.15;   // ≈3.4 = 跟手；≈3.0 = 被自身吸住
+          /* R5 审计：端到端终值判别力弱（步进恰好绕开吸附）—— 直接测语义：
+             取"距自身 0.05s（< 容差 0.133s）但距其它候选都远"的时刻，
+             含自身必吸附回自身位置，排除自身则原值返回。 */
+          const probeT = c1.start + 0.05;
+          const snapped = MTG.timeline.snapTime(probeT, false, c1.id);
+          out.snapExcludesSelf = Math.abs(snapped - probeT) < 1e-6;
           fire(el2, 'pointerup', x2 + small, y2);
         }
       } catch (e) {
@@ -995,6 +1001,12 @@
         const b1 = await mkBoard('bd-probe-m', '弹窗帧');
         const clip1 = { id: 'cl-probe-m', trackId: track.id, kind: 'board', boardId: b1.id, name: '弹窗镜头', start: 0, dur: 3, offset: 0 };
         p.clips.push(clip1);
+        /* R5 审计：playheadFrozen 此前是空断言（工程里只有 1 个片段时按 → 本来就
+           "已是最后一镜"、播放头天然不变）。造一个有画面的第二镜 ——
+           方向键若没被拦，stepShot 会推进播放头，断言才有判别力。 */
+        const bX = await mkBoard('bd-probe-x', '第二镜帧');
+        const clipX = { id: 'cl-probe-x', trackId: track.id, kind: 'board', boardId: bX.id, name: '第二镜', start: 6, dur: 2, offset: 0 };
+        p.clips.push(clipX);
         MTG.state.selectedClipIds = new Set([clip1.id]);
         MTG.ui.setView('sheet');                         // 弹窗在分镜表视图打开（更贴近 S-6 场景）
 
@@ -1042,12 +1054,49 @@
         out.renderConcurrentOK = itemCount === dataCount;
 
         /* 清理探针产物（工程目录留作复用） */
-        try { await MTG.storage.deleteFile('boards/bd-probe-m.png'); } catch (_) {}
-        p.boards = p.boards.filter(x => x.id !== b1.id);
-        p.clips = p.clips.filter(x => x.id !== clip1.id);
+        for (const rel of ['boards/bd-probe-m.png', 'boards/bd-probe-x.png']) {
+          try { await MTG.storage.deleteFile(rel); } catch (_) {}
+        }
+        p.boards = p.boards.filter(x => x.id !== b1.id && x.id !== bX.id);
+        p.clips = p.clips.filter(x => x.id !== clip1.id && x.id !== clipX.id);
+        /* 低项（R5）：探针不还原视图会污染后续用例 —— 切回时间轴 */
+        try { MTG.ui.setView('timeline'); } catch (_) {}
 
         out.ok = !!(out.opacityScaleOK && out.clampOK && out.sanitizeOK && out.layerOK && out.modalOK && out.delShotOK && out.renderConcurrentOK);
       } catch (e) { out.error = (e && e.message) || String(e); }
+      return JSON.stringify(out);
+    },
+
+    /* R5-2 探针：拖拽标志必须有兜底复位。
+       拖拽中元素可能被 render 摘除（外部同步 / resize / 分栏拖动），
+       pointerup 永远到不了它 —— dragging 若不复位，外部同步会进入永久轮询、
+       外部改动永不应用（卡死级）。三条兜底路径逐条验证。 */
+    dragGuardProbe() {
+      const out = {};
+      const bak = MTG.state.project;
+      try {
+        if (!MTG.state.project) {
+          MTG.state.project = { name: 'dg-probe', boardW: 1280, boardH: 720, fps: 12, tracks: [], clips: [], assets: [], boards: [], tagOptions: {} };
+        }
+        MTG.timeline.render();
+        /* ① render 重建 DOM（摘除被拖元素）→ 标志必须当场复位 */
+        MTG.timeline.dragging = true;
+        MTG.timeline.renderTracks();
+        out.clearedByRender = MTG.timeline.dragging === false;
+        /* ② window 级 up 兜底（事件到不了已摘除的元素） */
+        MTG.timeline.dragging = true;
+        window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 4242 }));
+        out.clearedByWindowUp = MTG.timeline.dragging === false;
+        /* ③ window 级 cancel 同理 */
+        MTG.timeline.dragging = true;
+        window.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 4243 }));
+        out.clearedByWindowCancel = MTG.timeline.dragging === false;
+        out.ok = !!(out.clearedByRender && out.clearedByWindowUp && out.clearedByWindowCancel);
+      } catch (e) { out.error = (e && e.message) || String(e); }
+      finally {
+        MTG.timeline.dragging = false;
+        if (!bak) { MTG.state.project = null; try { MTG.timeline.render(); } catch (_) {} }
+      }
       return JSON.stringify(out);
     },
 

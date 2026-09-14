@@ -1,6 +1,8 @@
-/* 探针回归测试（R3 B-3）：压感/轮盘/时间轴三个探针此前"写了不跑"——
-   这里用 --smoke-eval 驱动真 Electron 进程并对关键读数断言。
-   与 mcp-server.test 同法：spawn 真进程；无 electron 二进制时跳过。 */
+/* 探针回归测试（R3 B-3 起）：
+   用 --smoke-eval 驱动真 Electron 进程并对关键读数断言。
+   · R5：接线补全（重命名含 IME / 素材生命周期 / 导入命名 / R5-2 拖拽兜底），
+     并把"能不能跑"的判定从"exe 存在"改为"electron 能产出含 [smoke-eval] 的输出" ——
+     受限环境（无 GUI / ELECTRON_RUN_AS_NODE）里是 skip（可诊断），而不是硬红/ENOENT。 */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -11,24 +13,45 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const electron = path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe');
 const logPath = path.join(root, 'smoke.log');
-const canRun = fs.existsSync(electron);
+const hasBinary = fs.existsSync(electron);
 
-function runProbe(expr) {
+function launch(args, timeout) {
   try { fs.rmSync(logPath, { force: true }); } catch (_) {}
-  const r = spawnSync(electron, ['.', '--smoke', '--smoke-play', '--smoke-eval=' + expr],
-    { cwd: root, timeout: 90000, encoding: 'utf8' });
-  assert.equal(r.status, 0, 'electron 退出码 ' + r.status + '（' + (r.error || '') + '）');
-  /* smoke.log 可能因启动失败而缺失（此前直接 readFileSync 抛 ENOENT，看不出原因）：
-     回退读 stdout/stderr，仍无输出时给出可诊断的断言信息 */
-  let text = '';
-  try { text = fs.readFileSync(logPath, 'utf8'); } catch (_) { text = ''; }
-  if (!text.trim()) text = String(r.stdout || '') + '\n' + String(r.stderr || '');
-  const line = text.split('\n').find((l) => l.indexOf('[smoke-eval]') >= 0);
-  assert.ok(line, '未捕获 [smoke-eval] 输出（smoke.log / stdout / stderr 均为空）');
-  return JSON.parse(line.slice(line.indexOf('[smoke-eval]') + '[smoke-eval]'.length));
+  return spawnSync(electron, args, { cwd: root, timeout: timeout || 90000, encoding: 'utf8' });
 }
 
-test('探针回归：压感管线（penProbe）', { skip: !canRun }, () => {
+/* 从 stdout/stderr/smoke.log 三源里取 [smoke-eval] 行（R5 §4：此前只读文件，
+   启动失败时直接 ENOENT，看不出原因） */
+function grabEval(extra) {
+  let t = String(extra || '');
+  if (t.indexOf('[smoke-eval]') < 0) {
+    try { t += '\n' + fs.readFileSync(logPath, 'utf8'); } catch (_) { /* 无文件 */ }
+  }
+  const line = t.split('\n').find((l) => l.indexOf('[smoke-eval]') >= 0);
+  return line ? line.slice(line.indexOf('[smoke-eval]') + '[smoke-eval]'.length) : null;
+}
+
+/* 可用性探测：electron 能启动并产出 [smoke-eval] 才跑探针用例 */
+const probeOK = hasBinary && (() => {
+  try {
+    const r = launch(['.', '--smoke', '--smoke-eval="probe-ok"'], 60000);
+    return grabEval(String(r.stdout || '') + '\n' + String(r.stderr || '')) != null;
+  } catch (_) { return false; }
+})();
+const skip = probeOK
+  ? false
+  : (hasBinary
+    ? 'Electron 无法产出 smoke-eval 输出（无 GUI / ELECTRON_RUN_AS_NODE？）—— 跳过探针'
+    : '未安装 electron 二进制 —— 跳过探针');
+
+function runProbe(expr) {
+  const r = launch(['.', '--smoke', '--smoke-play', '--smoke-eval=' + expr]);
+  const out = grabEval(String(r.stdout || '') + '\n' + String(r.stderr || ''));
+  assert.ok(out != null, '未捕获 [smoke-eval] 输出（electron 退出码 ' + r.status + '）');
+  return JSON.parse(out);
+}
+
+test('探针回归：压感管线（penProbe）', { skip }, () => {
   const o = runProbe('window.__fabulaTest.penProbe()');
   assert.ok(!o.error, '探针异常：' + o.error);
   assert.equal(o.firstFrameOK, true, '起笔首帧不得塌陷（忠实映射 ≈0）');
@@ -39,7 +62,7 @@ test('探针回归：压感管线（penProbe）', { skip: !canRun }, () => {
   assert.equal(o.midStrokeOK, true, '极轻起笔后段必须跟随真实压力（非速度驱动）');
 });
 
-test('探针回归：轮盘右键 + 时间轴拖拽（radialProbe / tlDragProbe）', { skip: !canRun }, () => {
+test('探针回归：轮盘右键 + 时间轴拖拽（radialProbe / tlDragProbe）', { skip }, () => {
   const arr = runProbe('[window.__fabulaTest.radialProbe(),window.__fabulaTest.tlDragProbe()]');
   assert.ok(Array.isArray(arr) && arr.length === 2, '双探针输出应为数组');
   const radial = JSON.parse(arr[0]);
@@ -51,9 +74,10 @@ test('探针回归：轮盘右键 + 时间轴拖拽（radialProbe / tlDragProbe�
   assert.equal(tl.reordered, true, '拖过邻居中线应触发重排');
   assert.equal(tl.thirdUntouched, true, '换位只交换两段：未触碰的第三段与间隔原地不动（H-4）');
   assert.equal(tl.snapFreeOK, true, '拖拽连续跟手：吸附候选不得含被拖片段自身（H-6）');
+  assert.equal(tl.snapExcludesSelf, true, '吸附候选排除自身（H-6 直测：距自身 < 容差也不吸附）');
 });
 
-test('探针回归：交互修复（不透明度 / 图层 / 弹窗作用域 / 删镜头）', { skip: !canRun }, () => {
+test('探针回归：交互修复（不透明度 / 图层 / 弹窗作用域 / 删镜头）', { skip }, () => {
   const o = runProbe('window.__fabulaTest.interactionProbe(window.__fabulaSmokeDir)');
   assert.ok(!o.error, '探针异常：' + o.error);
   assert.equal(o.opacityScaleOK, true, '不透明度滑杆必须按百分数↔比例换算（20→0.2 / 100→1 / 1→0.01）');
@@ -62,4 +86,32 @@ test('探针回归：交互修复（不透明度 / 图层 / 弹窗作用域 / �
   assert.equal(o.layerOK, true, '图层切换必须真正到达引擎（setLayer）');
   assert.equal(o.modalOK, true, '绘画弹窗期间方向键 / Delete / 切视图都不得改变工作台状态');
   assert.equal(o.delShotOK, true, '删镜头：二次确认 + 帧条目与磁盘文件一起清理');
+  assert.equal(o.renderConcurrentOK, true, '并发 render 不得渲染出重复条目（H-14）');
+});
+
+test('探针回归：重命名（含 IME）/ 素材生命周期 / 导入命名', { skip }, () => {
+  const r = runProbe('(async function(){ var o = {};'
+    + ' o.rename = await window.__fabulaTest.groupRenameProbe();'
+    + ' o.life = await window.__fabulaTest.assetLifecycleProbe(window.__fabulaSmokeDir);'
+    + ' o.naming = await window.__fabulaTest.importNamingProbe();'
+    + ' return JSON.stringify(o); })()');
+  const ren = JSON.parse(r.rename);
+  const life = JSON.parse(r.life);
+  const nam = JSON.parse(r.naming);
+  assert.ok(!ren.error, '重命名探针异常：' + ren.error);
+  assert.equal(ren.renamedA, true, '直接输入 + 回车应写回新组名');
+  assert.equal(ren.imeGuard, true, '输入法组合中按回车不得把上屏前的旧值写回');
+  assert.equal(ren.renamedB, true, '输入法上屏（compositionend）后应自动提交新名');
+  assert.ok(!life.error, '素材生命周期探针异常：' + life.error);
+  assert.equal(life.ok, true, '素材：精确补录 / 删除不复活 / 磁盘副本回收 全链路');
+  assert.ok(!nam.error, '导入命名探针异常：' + nam.error);
+  assert.ok(Array.isArray(nam.assets), '导入命名探针应返回素材清单');
+});
+
+test('探针回归：拖拽兜底（dragGuardProbe · R5-2）', { skip }, () => {
+  const o = runProbe('window.__fabulaTest.dragGuardProbe()');
+  assert.ok(!o.error, '探针异常：' + o.error);
+  assert.equal(o.clearedByRender, true, 'render 摘除被拖元素时 dragging 必须当场复位');
+  assert.equal(o.clearedByWindowUp, true, 'window 级 pointerup 必须兜底复位');
+  assert.equal(o.clearedByWindowCancel, true, 'window 级 pointercancel 必须兜底复位');
 });

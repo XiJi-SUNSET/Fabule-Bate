@@ -39,10 +39,15 @@
           TL.el.scroll.scrollLeft = nx - (e.clientX - rect.left);
           return;
         }
-        /* deltaX 优先（触控板横向手势）；deltaMode=1/2（行/页）折算成像素 */
+        /* R5-3：只有"横向意图"（触控板 deltaX > deltaY）或"纵向无溢出"时才转横向 ——
+           一概把 deltaY 转横向会把轨道区的纵向滚动整个吃掉（≥3 条轨道时滚轮像失灵） */
         const unit = e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? 120 : 1);
-        const dx = (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) * unit;
-        if (dx) { e.preventDefault(); TL.el.scroll.scrollLeft += dx; }
+        const dx = e.deltaX * unit, dy = e.deltaY * unit;
+        const canScrollY = TL.el.scroll.scrollHeight > TL.el.scroll.clientHeight + 1;
+        if (Math.abs(dx) > Math.abs(dy) || !canScrollY) {
+          const d = Math.abs(dx) > Math.abs(dy) ? dx : dy;
+          if (d) { e.preventDefault(); TL.el.scroll.scrollLeft += d; }
+        }
       }, { passive: false });
 
       /* 头部与内容垂直滚动同步由 syncHeadScroll() 统一负责（L-3 修复后的
@@ -72,6 +77,17 @@
       /* M-3：pointercancel（笔/触屏常见）也要复位 —— 否则 scrubbing 卡在 true，
          此后不按键悬停标尺也会拖走播放头 */
       TL.el.ruler.addEventListener('pointercancel', rulerEnd);
+
+      /* R5-2 兜底：拖拽会话的 window 级收尾。拖拽中的元素可能被 render 摘除
+         （外部同步 / 窗口 resize / 分栏拖动），pointerup 永远到不了它 ——
+         TL.dragging 卡死会让外部同步进入永久 500ms 轮询、外部改动永不应用。 */
+      const dragBail = () => {
+        if (!TL.dragging) return;
+        TL.dragging = false;
+        if (MTG.app && MTG.app.resumeExternal) { try { MTG.app.resumeExternal(); } catch (_) {} }
+      };
+      window.addEventListener('pointerup', dragBail, true);
+      window.addEventListener('pointercancel', dragBail, true);
 
       /* 从素材库拖入 */
       TL.el.tracks.addEventListener('dragover', e => {
@@ -273,6 +289,9 @@
     },
 
     renderTracks() {
+      /* R5-2：重建 DOM 会摘下被拖元素（其 pointerup 永不到达）→ 先复位拖拽标志，
+         否则外部同步会被"拖拽中"假象永久挂起 */
+      if (TL.dragging) TL.dragging = false;
       const p = MTG.state.project;
       const box = TL.el.tracks;
       box.innerHTML = '';
@@ -891,22 +910,39 @@
         if (clip.kind === 'board' && MTG.state.currentBoardId === clip.boardId) MTG.ui.syncBoardMeta();
       };
 
-      const up = ev => {
+      /* R5-5：pointercancel（笔/触屏被系统打断）必须"取消即回滚"，不再照常提交 ——
+         与标尺/轨道行的取消语义对齐（此前 cancel 直接接到 up 上，取消却落盘） */
+      const finish = (ev, canceled) => {
         el.classList.remove('dragging');
         el.removeEventListener('pointermove', move);
-        el.removeEventListener('pointerup', up);
-        el.removeEventListener('pointercancel', up);
+        el.removeEventListener('pointerup', onUp);
+        el.removeEventListener('pointercancel', onCancel);
+        clearTimeout(guardTimer);
         try { el.releasePointerCapture(ev.pointerId); } catch (err) {}
-        const changed = reordered || o.start !== clip.start || o.dur !== clip.dur || o.trackId !== clip.trackId ||
-          (group && group.some(g => g.start !== g.c.start));
-        if (changed) MTG.markDirty();
+        if (canceled) {
+          clip.start = o.start; clip.dur = o.dur; clip.offset = o.offset; clip.trackId = o.trackId;
+          if (group) group.forEach(g => { g.c.start = g.start; });
+        } else {
+          const changed = reordered || o.start !== clip.start || o.dur !== clip.dur || o.trackId !== clip.trackId ||
+            (group && group.some(g => g.start !== g.c.start));
+          if (changed) MTG.markDirty();
+        }
         TL.render();
         TL.dragging = false;     // H-13：拖动结束，积压的外部同步可以补跑
         if (MTG.app && MTG.app.resumeExternal) { try { MTG.app.resumeExternal(); } catch (_) {} }
+        if (canceled) MTG.toast && MTG.toast('拖拽已取消');
       };
+      const onUp = ev => finish(ev, false);
+      const onCancel = ev => finish(ev, true);
+      /* R5-2 三重兜底之三：极端情况下（元素被摘除、window 兜底也没等到）超时强制收尾 */
+      const guardTimer = setTimeout(() => {
+        if (!TL.dragging) return;
+        TL.dragging = false;
+        if (MTG.app && MTG.app.resumeExternal) { try { MTG.app.resumeExternal(); } catch (_) {} }
+      }, 12000);
       el.addEventListener('pointermove', move);
-      el.addEventListener('pointerup', up);
-      el.addEventListener('pointercancel', up);
+      el.addEventListener('pointerup', onUp);
+      el.addEventListener('pointercancel', onCancel);
     },
 
     /* ── 拖入素材 → 生成片段 ── */

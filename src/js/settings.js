@@ -160,6 +160,9 @@
     action(id) { return ACTIONS.find(a => a.id === id) || null; },
     bindActions(map) { S.handlers = Object.assign(S.handlers || {}, map); },
     run(id, ev) {
+      /* R5-1：模态守卫（宿主注册）—— 键盘、轮盘菜单、任何直接 run() 都要过这个闸门，
+         避免"键盘被拦、轮盘绕过去"的旁路（绘画弹窗里选"下一镜"会写错帧） */
+      if (S.gate && !S.gate(id, ev)) return false;
       const h = S.handlers && S.handlers[id];
       if (h) { h(ev); return true; }
       return false;
@@ -302,6 +305,9 @@
           if (e.target.closest('[data-act="reset"]')) {
             try { localStorage.removeItem(KEY); } catch (err) {}
             S.load(); S.apply(); S.ui.render();
+            /* H-1 残留：重置也要通知宿主 —— 否则自动保存间隔回到默认值（0=关）
+               之后，旧定时器还按旧间隔继续跑 */
+            S.listeners.forEach(fn => { try { fn(S.data); } catch (e) {} });
             MTG.toast('已恢复默认设置');
             return;
           }

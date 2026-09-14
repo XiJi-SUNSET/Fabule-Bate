@@ -7,6 +7,23 @@ const store = require('./projectStore.js');
 /* 冒烟模式全局标志（自定义协议/单实例锁/关窗握手等都要区分） */
 const SMOKE = process.argv.some((a) => a === '--smoke' || a.startsWith('--smoke-'));
 
+/* 冒烟日志落盘（提到启动链路最前面）：Windows GUI 进程的 stdout 在终端拿不到
+   （console.log 静默丢失），冒烟模式下把 console 输出镜像到 smoke.log。
+   必须早于单实例锁等任何可能抛错的启动步骤 —— 否则早期异常既不上屏也不落盘，
+   故障变成"完全空白"，无从诊断（R5 附录踩到过）。 */
+if (SMOKE) {
+  const fsx = require('node:fs');
+  const LOG = path.join(__dirname, '..', 'smoke.log');
+  try { fsx.writeFileSync(LOG, ''); } catch (_) {}
+  const mirror = (fn) => (...a) => {
+    const line = a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ') + '\n';
+    try { fsx.appendFileSync(LOG, line); } catch (_) {}
+    fn(...a);
+  };
+  console.log = mirror(console.log.bind(console));
+  console.error = mirror(console.error.bind(console));
+}
+
 /* 主进程异常兜底（M-8）：未捕获异常/拒绝至少留下可查的日志，不让进程静默死掉 */
 process.on('uncaughtException', (err) => console.error('[main] uncaughtException:', err));
 process.on('unhandledRejection', (err) => console.error('[main] unhandledRejection:', err));
@@ -20,21 +37,6 @@ if (!SMOKE && !app.requestSingleInstanceLock()) {
     const w = BrowserWindow.getAllWindows()[0];
     if (w) { if (w.isMinimized()) w.restore(); w.focus(); }
   });
-}
-
-/* 冒烟日志落盘：Windows GUI 进程的 stdout 在终端拿不到（console.log 静默丢失），
-   冒烟模式下把 console 输出镜像一份到 smoke.log，跑完直接读文件核对 */
-if (SMOKE) {
-  const fsx = require('node:fs');
-  const LOG = path.join(__dirname, '..', 'smoke.log');
-  try { fsx.writeFileSync(LOG, ''); } catch (_) {}
-  const mirror = (fn) => (...a) => {
-    const line = a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ') + '\n';
-    try { fsx.appendFileSync(LOG, line); } catch (_) {}
-    fn(...a);
-  };
-  console.log = mirror(console.log.bind(console));
-  console.error = mirror(console.error.bind(console));
 }
 
 /* 渲染端代码从 src/ 以 ESM 加载。file:// 协议下 <script type=module> 的 import

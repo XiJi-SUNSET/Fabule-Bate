@@ -122,7 +122,10 @@
       });
 
       tr.addEventListener('click', () => S.select(shot));
-      tr.addEventListener('dblclick', () => {
+      tr.addEventListener('dblclick', ev => {
+        /* R5-14：双击行内输入框/画面是在选词或开弹窗 —— 不得顺带跳去时间轴视图 */
+        const t = ev.target;
+        if (t && t.closest && t.closest('input, textarea, select, .shot-pic, button')) return;
         MTG.ui.setView('timeline');
         MTG.setPlayhead(Math.max(0, shot.start) + 0.001);
       });
@@ -182,6 +185,7 @@
       const shot = MTG.findClip(id);
       const over = MTG.findClip(overId);
       if (!shot || !over || shot === over) return;
+      const srcTrackId = shot.trackId;
       const arr = MTG.board.orderedShots().filter(s => s.trackId === over.trackId);
       if (!arr.length) return;
       const from = arr.indexOf(shot);
@@ -193,6 +197,11 @@
       shot.trackId = over.trackId;                 // 允许拖到别的分镜轨
       let acc = arr[0].start;
       arr.forEach(s => { s.start = acc; acc += s.dur; });
+      /* R5-16：跨轨拖走后在源轨留下"洞" —— 源轨重新首尾相接（与目标轨同一规则） */
+      if (srcTrackId !== over.trackId) {
+        const src = MTG.board.orderedShots().filter(s => s.trackId === srcTrackId);
+        if (src.length) { let a2 = src[0].start; src.forEach(s => { s.start = a2; a2 += s.dur; }); }
+      }
       MTG.markDirty();
       MTG.render();
       MTG.toast('已把镜头移到第 ' + (arr.indexOf(shot) + 1) + ' 位');
@@ -409,7 +418,8 @@
       const stillUsed = !!(bid && p.clips.some(x => x.boardId === bid));
       if (bid && !stillUsed) {
         const b = MTG.findBoard(bid);
-        if (b) await MTG.assets.removeItems([Object.assign({ type: 'board' }, b)]);
+        /* R5-21：静默清理链的 toast，避免与本条"已删除镜头"互相覆盖（关键信息被吃掉） */
+        if (b) await MTG.assets.removeItems([Object.assign({ type: 'board' }, b)], { silent: true });
         else MTG.render();
       } else {
         MTG.render();
@@ -458,6 +468,12 @@
         await B.flush();                                   // 当前画板若有未存笔迹，先落盘
         MTG.setPlayhead(Math.max(0, shot.start) + 0.001);  // 播放头进该镜头 → 画板自动加载
         await B.syncToPlayhead();
+        /* R5-9：多分镜轨重叠时，syncToPlayhead 可能命中另一条轨的片段 →
+           画布换成了别的帧，而弹窗标题还指着所点镜头（笔迹会写错帧）。
+           以所点镜头为准强制对齐。 */
+        if (MTG.state.currentBoardId !== shot.boardId && MTG.findBoard(shot.boardId)) {
+          await B.loadFrame(shot.boardId);
+        }
         if (!MTG.findBoard(shot.boardId)) { MTG.toast('帧文件丢失，无法绘画', true); return; }
 
         const no = MTG.board.orderedShots().indexOf(shot) + 1;

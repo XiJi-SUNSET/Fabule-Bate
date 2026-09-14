@@ -277,7 +277,8 @@
          已被 saveParams 持久化。回填前先把 >1 的值落回 <1，顺手存回偏好。 */
       if (bp.opacity > 1) {
         bp.opacity = U.clamp(bp.opacity / 100, 0.01, 1);
-        MTG.brushes.saveParams(MTG.board.brushId, { opacity: bp.opacity });   // 只回写这一项（H-10）
+        const tid0 = (MTG.board.engine && MTG.board.engine().id) || MTG.board.brushId;
+        MTG.brushes.saveParams(tid0, { opacity: bp.opacity });   // 只回写这一项（H-10/R5-7）
       }
       /* 滑杆是百分数（1~100），引擎参数 opacity 是 0.01~1：回填必须 ×100，
          否则会把 1（=100%）显示成 1%，而且下一次拖动会把错值写回去（S-1） */
@@ -322,9 +323,18 @@
           window.dispatchEvent(new Event('resize'));
           if (neverSized && MTG.board && MTG.board.fitView) MTG.board.fitView();
         });
+        /* R5-18：镜头信息列只在播放头变化/时长编辑时刷新 ——
+           从分镜表切回来会显示旧值，这里补一次同步 */
+        if (MTG.ui && MTG.ui.syncBoardMeta) MTG.ui.syncBoardMeta();
       }
     }
   };
+
+  /* ══════════ 模态守卫（R5-1）══════════
+     绘画弹窗 / 故事板详情窗打开时，会切换"当前镜头/播放头/内容"的全局动作一律禁执行。
+     守卫必须下沉到动作分发层（settings.run）——键盘、轮盘菜单、任何直调都从同一个
+     闸门过；此前只有键盘路径被拦，轮盘能从侧门把"写错帧"放回来。 */
+  const PM_BLOCK = new Set(['cmd.play', 'cmd.prev', 'cmd.next', 'cmd.home', 'cmd.newFrame', 'cmd.saveFrame']);
 
   /* ══════════ 工程打开 / 保存 ══════════ */
   /* 切工程与外部同步互斥（N-A6）：切工程在多个 await 之间若到达广播，
@@ -499,6 +509,9 @@
     area.addEventListener('pointercancel', (e) => {
       if (e.__penReplay || e.pointerType !== 'pen') return;
       e.preventDefault(); e.stopPropagation();
+      /* R5-6：取消也必须重放 —— 只吞不放的话，下游会话（标尺擦洗 / 片段拖拽 /
+         轨道重排）永远收不到取消收尾，scrubbing / dragging 会卡死 */
+      if (downTarget) send(e);
       downTarget = null;
     }, true);
   }
@@ -669,10 +682,12 @@
         if (MTG.board.bp) {                        // 同步到当前笔刷自己的参数（引擎单位）
           const val = toEngine ? toEngine(raw) : raw;
           MTG.board.bp[key] = val;
-          /* H-10：只持久化"被改的这一项" —— 传全量 bp 会把当前工具（比如橡皮）的
-             整套参数写进笔刷存档，切回秀丽笔时手感被硬边/无压感参数污染 */
+          /* H-10 + R5-7：只持久化"被改的这一项"；目标 id 必须是"当前引擎工具"
+             （MTG.board.brushId 只在 5 支画笔间更新 —— 在橡皮/涂抹上拖滑杆
+             会把参数写进 pen 的存档，切回秀丽笔手感被污染） */
           const patch = {}; patch[key] = val;
-          MTG.brushes.saveParams(MTG.board.brushId, patch);
+          const tid = (MTG.board.engine && MTG.board.engine().id) || MTG.board.brushId;
+          MTG.brushes.saveParams(tid, patch);
         }
         $(id + '-v').textContent = el.value;
       };
@@ -806,8 +821,12 @@
       'cmd.prev': () => stepShot(-1),
       'cmd.next': () => stepShot(1),
       'cmd.del': () => {
-        if (MTG.board.sel) MTG.board.deleteSel();          // 画板有选区 → 删选区内容
-        else MTG.timeline.deleteSelected();
+        if (MTG.board.sel) { MTG.board.deleteSel(); return; }   // 画板有选区 → 删选区内容
+        /* R5-15（S-7 旁路）：视图感知 —— 分镜表里 Delete 必须走"删镜头"的
+           确认 + 完整清理链（否则照样攒出删不掉的孤儿帧）；时间轴里仍只删片段
+           （素材保留，可重新拖上来） */
+        if (MTG.sheet && MTG.sheet.active) { MTG.sheet.delShot(); return; }
+        MTG.timeline.deleteSelected();
       },
       'cmd.fit': () => MTG.board.fitView(),
       'cmd.z100': () => MTG.board.zoom100(),
@@ -836,23 +855,47 @@
     });
     MTG.settings.bindActions(acts);
 
+    /* 模态守卫注册（R5-1）：动作分发层唯一闸门 —— 轮盘 / 键盘 / 直调共用 */
+    MTG.settings.gate = (id) => {
+      const pmOpen = !!(MTG.sheet && MTG.sheet.pmShot);
+      const det = document.getElementById('story-detail');
+      const detOpen = !!(det && !det.classList.contains('hidden'));
+      if (!pmOpen && !detOpen) return true;
+      if (PM_BLOCK.has(id)) return false;                        // 切帧 / 播放 / 删镜头 / 新建帧…
+      if (id === 'cmd.del' && !MTG.board.sel) return false;      // 无选区时 Delete 不得删片段/镜头
+      return true;
+    };
+
     /* 快捷键：表驱动，按键在设置里改 */
-    /* 绘画弹窗（模态）期间禁止的全局动作（S-3）：它们会切换当前镜头/播放头，
-       导致后续笔迹写进别的帧，或直接删掉正在画的镜头。 */
-    const PM_BLOCK = new Set(['cmd.play', 'cmd.prev', 'cmd.next', 'cmd.home', 'cmd.newFrame', 'cmd.saveFrame']);
     document.addEventListener('keydown', e => {
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
       if (MTG.story && MTG.story.sliding) return;      // 放映中按键交给故事板处理
 
-      /* 绘画弹窗打开：切帧/播放/删镜头类快捷键一律不生效（S-3）。
-         放行：工具键、撤销重做、Esc/Enter 会话、Ctrl+S 保存、有选区时的 Delete（删选区内容）。 */
+      /* Esc：优先关闭最上层模态（S-3 残留 / R5-17）。
+         变换会话进行中不关窗 —— 让引擎的 Esc 先放弃变换。 */
+      if (e.key === 'Escape') {
+        if (MTG.board.xf) { /* 交给下面的变换分支 */ }
+        else if (MTG.sheet && MTG.sheet.pmShot) {
+          e.preventDefault();
+          MTG.sheet.closePaint(true);                  // 存帧并关闭（Esc 不丢笔迹）
+          return;
+        } else {
+          const det = document.getElementById('story-detail');
+          if (det && !det.classList.contains('hidden')) { e.preventDefault(); det.classList.add('hidden'); return; }
+        }
+      }
+
+      /* 绘画弹窗打开：切帧/删镜头类快捷键不生效（S-3）。
+         放行：工具键、撤销重做、Esc/Enter 会话、Ctrl+S 保存、有选区时的 Delete、
+         空格（cmd.play 由动作层闸门拦在 run 之前，但键盘层要放行到下面的"按住=平移"分支）。 */
       if (MTG.sheet && MTG.sheet.pmShot) {
         const combo0 = MTG.settings.comboOf(e);
         const aid0 = combo0 ? MTG.settings.actionFor(combo0) : null;
         const isArrow = /^Arrow(Left|Right|Up|Down)$/.test(e.key);
         const blockDel = aid0 === 'cmd.del' && !MTG.board.sel;
-        if (isArrow || blockDel || (aid0 && PM_BLOCK.has(aid0))) { e.preventDefault(); return; }
+        const blockAct = aid0 && PM_BLOCK.has(aid0) && aid0 !== 'cmd.play';
+        if (isArrow || blockDel || blockAct) { e.preventDefault(); return; }
       }
       /* 变换会话中方向键属于引擎（移动内容）——宿主不切帧（S-4）。
          宿主在 document（冒泡）比引擎的 window 监听器先跑，不能用 defaultPrevented 判断。 */
@@ -893,7 +936,10 @@
       if (MTG.radial.open && combo === MTG.settings.get('radialKey')) { MTG.radial.close(true); return; }
       if (MTG.board.spaceHeld && combo === MTG.settings.keyOf('cmd.play')) {
         MTG.board.spaceHeld = false;
-        if (!MTG.board.spacePanned && Date.now() - MTG.board.spaceDownAt < 260) {
+        /* S-3 残留：弹窗/详情窗期间空格只做平移，不触发播放（否则播放头推进 = 换帧） */
+        const modal = !!(MTG.sheet && MTG.sheet.pmShot)
+          || (() => { const d = document.getElementById('story-detail'); return !!(d && !d.classList.contains('hidden')); })();
+        if (!modal && !MTG.board.spacePanned && Date.now() - MTG.board.spaceDownAt < 260) {
           MTG.audio.playing ? MTG.audio.pause() : MTG.audio.play();
         }
         MTG.board.spacePanned = false;
@@ -982,6 +1028,17 @@
       if (mem && JSON.stringify(merged) === JSON.stringify(mem)) {
         MTG.toast && MTG.toast('检测到外部更新（内容与本地一致）');
         return;
+      }
+      /* R5-4：同一次广播可能同时含 montage+media —— 只要含 montage 就整体走重载分支，
+         info.files 会被丢掉、音频缓存不作废（resetCaches 不清 MTG.audio.cache），
+         表现为"波形空白 / 片段无声"。这里按 files 逐键作废，下面的 ensureLoaded 会重解码。 */
+      const mediaFiles = Array.isArray(info && info.files) ? info.files : [];
+      for (const rel of mediaFiles) {
+        const a = ((disk && disk.assets) || []).find(x => x.path === rel);
+        if (a) {
+          MTG.assets.dropUrl(a.id);
+          if (MTG.audio && MTG.audio.cache) MTG.audio.cache.delete(a.id);
+        }
       }
       MTG.board.resetCaches();
       MTG.assets.resetCaches();
@@ -1076,7 +1133,9 @@
     st.brush.size = next;
     if (MTG.board.bp) {
       MTG.board.bp.size = next;
-      MTG.brushes.saveParams(MTG.board.brushId, MTG.board.bp);
+      /* R5-7：单项 patch + 当前引擎工具 id（此前全量 bp + brushId 会污染 pen 存档） */
+      const tid = (MTG.board.engine && MTG.board.engine().id) || MTG.board.brushId;
+      MTG.brushes.saveParams(tid, { size: next });
     }
     const el = $('b-size');
     if (el) { el.value = next; $('b-size-v').textContent = next; }
@@ -1186,14 +1245,23 @@
     setupAutosave();
     /* 设置面板变更 → 宿主侧立即重排（H-1/H-2）：此前 settings.onChange 全库无人订阅，
        "自动保存改 30 秒"要重启才生效、吸附状态被 apply() 用旧值改回去 */
+    let lastAutosaveSec = +MTG.settings.get('autosave') || 0;
+    let lastSnapOn = !!MTG.settings.get('snap');
     MTG.settings.onChange(() => {
-      setupAutosave();
+      /* R5-8：任何设置写入（含笔刷参数持久化）都会派发到这里 —— 只在"真的改了
+         对应键"时才重排/同步；无过滤的话拖一次笔刷滑杆就重置一次自动保存定时器，
+         连续编辑时定时器被无限推迟（H-1 的"按间隔生效"名存实亡） */
+      const sec = +MTG.settings.get('autosave') || 0;
+      if (sec !== lastAutosaveSec) { lastAutosaveSec = sec; setupAutosave(); }
       const on = !!MTG.settings.get('snap');
-      MTG.state.snap = on;
-      const top = document.getElementById('snap');
-      if (top && top.checked !== on) top.checked = on;
-      const pane = document.querySelector('[data-k="snap"]');
-      if (pane && pane.checked !== on) pane.checked = on;
+      if (on !== lastSnapOn) {
+        lastSnapOn = on;
+        MTG.state.snap = on;
+        const top = document.getElementById('snap');
+        if (top && top.checked !== on) top.checked = on;
+        const pane = document.querySelector('[data-k="snap"]');
+        if (pane && pane.checked !== on) pane.checked = on;
+      }
     });
 
     // 不再自动建工程：像 PR 一样，先打开（或新建）工程文件夹

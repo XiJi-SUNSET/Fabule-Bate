@@ -162,7 +162,10 @@
       else if (e.key === 'Enter') { MTG.tagMenu.close(); inp.blur(); }
     });
     inp.addEventListener('blur', () => {
-      setTimeout(() => { if (!MTG.tagMenu.hovering) MTG.tagMenu.close(); }, 140);
+      /* R5-11：延迟关闭必须校验"期间有没有新的 open" —— 旧实现下从字段 A 直接点到
+         相邻字段 B，B 的面板刚开就被 A 的 140ms 定时器关掉（键盘 Tab 必现） */
+      const tk = MTG.tagMenu._tk;
+      setTimeout(() => { if (!MTG.tagMenu.hovering && MTG.tagMenu._tk === tk) MTG.tagMenu.close(); }, 140);
     });
     return inp;
   };
@@ -170,6 +173,7 @@
   /* 标签面板（全局单例，挂在 body 上，避免表格重绘时残留一堆浮层） */
   MTG.tagMenu = {
     el: null, input: null, key: null, hovering: false,
+    _tk: 0,                       // 打开代际：旧 blur 定时器不得关闭新面板（R5-11）
 
     ensure() {
       if (this.el) return this.el;
@@ -180,11 +184,17 @@
       el.addEventListener('mouseleave', () => { MTG.tagMenu.hovering = false; });
       document.body.appendChild(el);
       this.el = el;
+      /* R5-12：面板是 fixed 一次性定位 —— 页面/表格滚动或窗口变化后会错位，
+         直接关掉（比停在原地误导用户好） */
+      const dismiss = () => { if (!el.classList.contains('hidden')) MTG.tagMenu.close(); };
+      window.addEventListener('resize', dismiss);
+      document.addEventListener('scroll', dismiss, true);
       return el;
     },
 
     open(input, key) {
       this.ensure();
+      this._tk++;                 // 新面板：作废所有旧的延迟关闭（R5-11）
       this.input = input;
       this.key = key;
       this.build();

@@ -17,6 +17,8 @@
     _order: [],                         // 当前渲染顺序的 key 列表（Shift 范围选择用）
     _lastKey: null,                     // 最近一次点选的 key（范围锚点）
     _rt: 0,                             // render 代际（H-14：并发 render 时后发者胜，防重复条目）
+    _delArm: null,                      // 删除二次确认：待确认的条目 key（或 'batch'）
+    _delTimer: null,
 
     /* 收集全部条目：分镜帧 + 素材，统一形状 */
     allItems() {
@@ -101,8 +103,10 @@
       const btn = document.getElementById('btn-del-selected');
       if (!btn) return;
       const n = A.selected.size;
+      const armed = A._delArm === 'batch';
       btn.disabled = !n;
-      btn.textContent = n ? '删除选中 (' + n + ')' : '删除选中';
+      btn.textContent = armed ? '确认删除 (' + n + ')' : (n ? '删除选中 (' + n + ')' : '删除选中');
+      btn.classList.toggle('armed', armed);
       btn.title = n
         ? '移除选中的 ' + n + ' 项：条目与引用它们的片段会被删除，工程内副本移入回收站'
         : '先点选素材（Ctrl / Shift 可多选）';
@@ -132,14 +136,27 @@
       A.selected.clear(); A._lastKey = null;
       A.paintSelection(); A.syncSelBar();
     },
+    /* M-14：批量删除同样二次确认（与单条 ✕ 同一套：按钮 3 秒内再点一次才执行） */
     removeSelected() {
-      return A.removeItems(A.selectedItems());
+      const items = A.selectedItems();
+      if (!items.length) return;
+      if (A._delArm !== 'batch') {
+        A._delArm = 'batch';
+        clearTimeout(A._delTimer);
+        A._delTimer = setTimeout(() => { A._delArm = null; A.syncSelBar(); }, 3000);
+        A.syncSelBar();
+        MTG.toast('再点一次「删除选中」确认（共 ' + items.length + ' 项，工程内副本移入回收站）');
+        return;
+      }
+      A._delArm = null;
+      A.syncSelBar();
+      return A.removeItems(items);
     },
 
     /* 移除条目（批量）：从工程清单删条目 + 连带引用片段 + 工程内磁盘副本移入回收站。
        之所以要删磁盘副本：这些文件是导入时复制进工程 assets/ 的托管副本，
        不删的话「扫描」会把它们当成新素材重新补录（用户反馈：删了又回来）。 */
-    async removeItems(items) {
+    async removeItems(items, opts) {
       const p = MTG.state.project;
       const list = (items || []).filter(Boolean);
       if (!p || !list.length) return;
@@ -183,9 +200,12 @@
       if (F && F.remove && delPaths.length) {
         try { await F.remove(delPaths); } catch (e) { console.warn('[assets] 主进程清单同步失败', e); }
       }
-      MTG.toast('已移除 ' + list.length + ' 项'
-        + (clipsRemoved ? '，同时移除 ' + clipsRemoved + ' 个引用片段' : '')
-        + (diskFailed ? '（' + diskFailed + ' 个磁盘文件删除失败）' : ''));
+      /* silent：调用方（如删镜头）自己有信息更全的提示，避免两条 toast 互相覆盖（R5-21） */
+      if (!(opts && opts.silent)) {
+        MTG.toast('已移除 ' + list.length + ' 项'
+          + (clipsRemoved ? '，同时移除 ' + clipsRemoved + ' 个引用片段' : '')
+          + (diskFailed ? '（' + diskFailed + ' 个磁盘文件删除失败）' : ''));
+      }
     },
 
     groupHead(s, count) {
@@ -343,8 +363,25 @@
       del.title = '从工程移除（工程内副本移入回收站，引用片段一并移除）';
       del.onclick = async ev => {
         ev.stopPropagation();
+        /* M-14：破坏性操作（连带删磁盘副本）先二次确认 —— 第一次点击进入确认态 */
+        const key = A.keyOf(it);
+        if (A._delArm !== key) {
+          A._delArm = key;
+          clearTimeout(A._delTimer);
+          A._delTimer = setTimeout(() => { A._delArm = null; del.classList.remove('armed'); del.textContent = '✕'; }, 3000);
+          del.classList.add('armed');
+          del.textContent = '确认';
+          MTG.toast('再点一次确认移除（工程内副本移入回收站）');
+          return;
+        }
+        A._delArm = null;
+        clearTimeout(A._delTimer);
         del.disabled = true;                 // 防连点重复提交（移除是异步的）
-        await A.removeItems([it]);
+        try { await A.removeItems([it]); }
+        catch (err) {                        // R5-20：失败必须复位按钮，否则 ✕ 永久灰掉
+          del.disabled = false;
+          MTG.toast('移除失败：' + ((err && err.message) || err), true);
+        }
       };
       /* 删除按钮上按下鼠标不触发条目的选择逻辑 */
       del.addEventListener('mousedown', ev => ev.stopPropagation());
@@ -394,6 +431,8 @@
       A._order = [];
       A._lastKey = null;
       A._rt++;                       // 作废在途 render（切工程时旧结果的 append 必须停）
+      A._delArm = null;
+      clearTimeout(A._delTimer);
       A.syncSelBar();
     },
 

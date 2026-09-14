@@ -45,6 +45,14 @@ function asStr(v) { return typeof v === 'string' ? v : ''; }
 function normalizeDescription(raw) {
   const out = {};
   for (const k of DESCRIPTION_KEYS) out[k] = asStr(raw && raw[k]);
+  /* R5-13 字段漂移：渲染端（分镜表 / 故事板 / MCP 都写）用 remark，这里的
+     DESCRIPTION_KEYS 是历史名 notes —— 双向对齐：分镜表写的备注服务端读得到，
+     旧数据也不丢（notes 键保留，值同步）。 */
+  const remark = asStr(raw && raw.remark) || out.notes;
+  if (remark) {
+    out.remark = remark;
+    if (!out.notes) out.notes = remark;
+  }
   return out;
 }
 
