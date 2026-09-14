@@ -61,7 +61,8 @@
     thumbCache: new Map(),
     onionCache: new Map(),
     onionLoading: new Set(),
-    _thumbUrl: new Map(),
+    _ogen: 0,            /* 洋葱皮加载代际：refreshMedia 自增以作废 in-flight 回填（R3 B-11） */
+    _thumbPending: new Map(),   /* thumbUrl 并发去重（R3 B-16）：id -> in-flight Promise */
 
     /* ================= 引擎状态映射 ================= */
     get brushId() { return brushId; },
@@ -204,8 +205,8 @@
     },
     zoom100() { const e = E(); if (e) e.zoom100(); },
 
-    /* 引擎自绘光标与线宽环，这里只保留"空场"光标态 */
-    syncCursor() {}, paint() {}, refreshRing() {},
+    /* （原 syncCursor/paint/refreshRing 三空桩已删：引擎自绘光标与线宽环；
+       全部调用点已随 R3 B-9 清理归零） */
     setIdle(on) {
       B._idle = !!on;
       const el = document.getElementById('stage');
@@ -275,18 +276,22 @@
       const b = MTG.findBoard(bid);
       if (!b || !MTG.storage.ready) return null;
       B.onionLoading.add(bid);
+      const gen = B._ogen;        /* 加载代际：期间被 refreshMedia 作废则丢弃回填（R3 B-11） */
       MTG.storage.readBlob(b.path).then((blob) => {
+        if (gen !== B._ogen) { B.onionLoading.delete(bid); return; }
         if (!blob) { B.onionCache.set(bid, 'missing'); B.onionLoading.delete(bid); return; }
         const url = URL.createObjectURL(blob);
         const img = new Image();
         img.onload = () => {
           URL.revokeObjectURL(url);
+          if (gen !== B._ogen) { B.onionLoading.delete(bid); return; }
           B.onionCache.set(bid, img);
           B.onionLoading.delete(bid);
           B.rebuildBackdrop();
         };
         img.onerror = () => {
           URL.revokeObjectURL(url);
+          if (gen !== B._ogen) { B.onionLoading.delete(bid); return; }
           B.onionCache.set(bid, 'missing');
           B.onionLoading.delete(bid);
         };
@@ -328,7 +333,13 @@
       const x = cvs.getContext('2d');
       /* 纸张底层：文档区域总有一张纸（与引擎取色的 paper 常量同色）。
          纸必须跟着视口缩放/平移，所以放 backdrop 而不是 CSS。 */
-      x.fillStyle = '#f5f0ea';
+      /* 纸色从 CSS token --paper 读（单一来源，R3 B-8）；读不到回退出厂值 */
+      let paperHex = '#f5f0ea';
+      try {
+        const v = getComputedStyle(document.documentElement).getPropertyValue('--paper').trim();
+        if (/^#[0-9a-fA-F]{6}$/.test(v)) paperHex = v;
+      } catch (_) {}
+      x.fillStyle = paperHex;
       x.fillRect(0, 0, W, H);
       if (refOn) x.drawImage(B.refImg, 0, 0, W, H);
 
@@ -528,16 +539,28 @@
       if (u) { URL.revokeObjectURL(u); B.thumbCache.delete(id); }
     },
 
-    /* 取某帧的可复用对象 URL（带缓存），时间轴缩略图与分镜表画面列共用 */
+    /* 取某帧的可复用对象 URL（带缓存），时间轴缩略图与分镜表画面列共用。
+       并发 miss 去重（R3 B-16）：同一帧的并发请求共享同一次加载，
+       避免重复 readBlob 与"后写覆盖先写"造成的 blob URL 泄漏。 */
     async thumbUrl(b) {
       if (!b) return null;
       if (B.thumbCache.has(b.id)) return B.thumbCache.get(b.id);
       if (!MTG.storage.ready) return null;
-      const blob = await MTG.storage.readBlob(b.path);
-      if (!blob) return null;
-      const u = URL.createObjectURL(blob);
-      B.thumbCache.set(b.id, u);
-      return u;
+      if (B._thumbPending.has(b.id)) return B._thumbPending.get(b.id);
+      const job = (async () => {
+        try {
+          const blob = await MTG.storage.readBlob(b.path);
+          if (!blob) return null;
+          if (B.thumbCache.has(b.id)) return B.thumbCache.get(b.id);   // 期间已被其它路径填充：复用，不二次建 URL
+          const u = URL.createObjectURL(blob);
+          B.thumbCache.set(b.id, u);
+          return u;
+        } finally {
+          B._thumbPending.delete(b.id);
+        }
+      })();
+      B._thumbPending.set(b.id, job);
+      return job;
     },
 
     /* 画板当前内容丢弃（从磁盘重读当前帧）——绘画弹窗「取消」用。

@@ -457,10 +457,13 @@
     },
 
     /* 压力管线探针（压感回归自检；对照 paint.js 的 shapePressure / 起笔门槛注释）：
-       ① 落笔首帧压力缺失（驱动全 0）→ 不得塌陷（首帧经中性起步 + 斜坡后仍 > 0.25）；
+       ① 起笔首帧忠实映射（无中性垫托）→ 零读数即 ≈0、不制造圆点；
+          真实压力到达后平滑链追到 > 0.4；
        ② 真实极轻接触（raw 0.015 < 死区）→ 必须立即落笔（修复前被门槛吞掉）；
-       ③ 正常压感 → 忠实映射（0.7 明显大于 0.2）。
-       仅测试/冒烟用：会向当前画布画三笔。 */
+       ③ 正常压感 → 忠实映射（0.7 明显大于 0.2）；
+       ④ 极轻零压起笔一笔 → 不得被判"无压感"（pressureSeen !== false）；
+       ⑤ 极轻起笔后段用力 → 该笔跟随真实压力（> 0.4，而非速度驱动的 ~0.24）。
+       仅测试/冒烟用。 */
     async penProbe() {
       const out = {};
       const ov = $('ov');
@@ -478,6 +481,10 @@
       };
       const E = window.__fabulaEngine;
       const lab = window.__paintlab;
+      /* 状态备份（R3 B-4）：探针会清层并画多笔，结束后恢复画布内容与原工具 */
+      let snap = null, bakTool = null;
+      try { snap = E.exportDataURL(); } catch (_) {}
+      try { bakTool = E.tool(); } catch (_) {}
       try {
         MTG.board.setIdle(false);
         E.setTool('pen');
@@ -528,6 +535,14 @@
         out.error = (e && e.message) || String(e);
       } finally {
         try { MTG.board.setIdle(true); } catch (_) {}
+        if (bakTool) { try { E.setTool(bakTool); } catch (_) {} }
+        if (snap) {
+          /* 恢复探针前的画布内容（含撤销栈复位到干净态）：会话状态不留污染 */
+          try {
+            const blob = await (await fetch(snap)).blob();
+            await E.loadImage(blob, { layer: 'fg', mode: 'stretch', clearUndo: true, fit: false });
+          } catch (_) {}
+        }
       }
       return JSON.stringify(out);
     },
@@ -536,6 +551,16 @@
        看片段顺序是否真的重排（验证"时间轴能不能拖拽排序"的现场事实）。 */
     tlDragProbe() {
       const out = {};
+      /* 状态备份（R3 B-4）：探针造的片段/轨道/选中集/伪工程在 finally 还原 */
+      const bak = {
+        proj: MTG.state.project,
+        sel: MTG.state.selectedClipIds,
+        clips: null, tracksLen: 0,
+      };
+      if (bak.proj) {
+        bak.clips = bak.proj.clips.map(c => ({ ref: c, start: c.start, dur: c.dur, trackId: c.trackId }));
+        bak.tracksLen = bak.proj.tracks.length;
+      }
       try {
         let p = MTG.state.project;
         if (!p) {
@@ -588,6 +613,20 @@
         out.pxPerSec = MTG.state.pxPerSec;
       } catch (e) {
         out.error = (e && e.message) || String(e);
+      } finally {
+        const p2 = MTG.state.project;
+        if (!bak.proj) {
+          MTG.state.project = null;                    // 原本无工程：连伪工程一起还原
+        } else if (p2 && bak.clips) {
+          for (const b of bak.clips) {                 // 元素级还原（引用不变，UI 侧一致）
+            b.ref.start = b.start; b.ref.dur = b.dur; b.ref.trackId = b.trackId;
+          }
+          p2.clips.length = 0;
+          for (const b of bak.clips) p2.clips.push(b.ref);   // 丢掉探针新加的片段
+          if (Array.isArray(p2.tracks)) p2.tracks.length = bak.tracksLen;
+          MTG.state.selectedClipIds = bak.sel;
+        }
+        try { MTG.timeline.render(); } catch (_) {}
       }
       return JSON.stringify(out);
     },
@@ -595,6 +634,13 @@
     /* 轮盘右键探针：radialRight 开启时，笔右键应呼出轮盘且不启动抓手（视图不动） */
     radialProbe() {
       const out = {};
+      /* 状态备份（R3 B-4）：radialRight / currentBoardId / 伪工程与伪 board 在 finally 还原 */
+      const bak = {
+        proj: MTG.state.project,
+        board: MTG.state.currentBoardId,
+        radialRight: MTG.settings.get('radialRight'),
+        pushedBoard: false,
+      };
       try {
         MTG.settings.set('radialRight', true);
         /* 冒烟环境常无当前画板：造最小场景（轮盘呼出要求有画板） */
@@ -605,6 +651,7 @@
           });
           if (!Array.isArray(p.boards)) p.boards = [];
           p.boards.push({ id: 'bd-radial', path: 'boards/radial-probe.png', w: 1280, h: 720 });
+          bak.pushedBoard = true;
           MTG.state.currentBoardId = 'bd-radial';
         }
         const ov = document.getElementById('ov');
@@ -625,7 +672,16 @@
         out.radialOpenOK = out.radialOpen === true || !out.hasBoard;   // 无画板时轮盘本就不呼出
         out.panOK = out.viewMoved === false;                           // 抓手不得连带启动
       } catch (e) { out.error = (e && e.message) || String(e); }
-      try { MTG.settings.set('radialRight', false); } catch (_) {}
+      finally {
+        /* 还原（R3 B-4）：伪 board 从原工程里移除；project / currentBoardId / 设置回原值 */
+        if (bak.pushedBoard && bak.proj && Array.isArray(bak.proj.boards)) {
+          const i = bak.proj.boards.findIndex(b => b.id === 'bd-radial');
+          if (i >= 0) bak.proj.boards.splice(i, 1);
+        }
+        MTG.state.project = bak.proj;
+        MTG.state.currentBoardId = bak.board;
+        try { MTG.settings.set('radialRight', bak.radialRight); } catch (_) {}
+      }
       return JSON.stringify(out);
     },
 

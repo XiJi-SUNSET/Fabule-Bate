@@ -20,7 +20,8 @@ function setup() {
   st.root = dir;
   st.win = { webContents: { send: (_ch, info) => events.push(info) } };
   st.lastMontage = null;
-  st.mediaDirty = false;
+  st.mediaFiles = new Set();        /* N-A5 采集集：跨用例隔离（原 st.mediaDirty 是幽灵字段，R3 B-20） */
+  store.__test.selfMedia.clear();   /* 自写登记表：跨用例隔离 */
   const fab = path.join(dir, 'fabula.json');
   fs.writeFileSync(fab, JSON.stringify(M.newProjectModel('t'), null, 2));
   st.lastJson = JSON.stringify(M.normalizeProject(JSON.parse(fs.readFileSync(fab, 'utf8'))), null, 2);

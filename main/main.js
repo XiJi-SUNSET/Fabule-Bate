@@ -67,10 +67,12 @@ function isProtectedBase(abs) {
   return normBaseOf(abs) === 'fabula.json';
 }
 
-/* 与 MCP 的读-改-写共享同一个锁文件（<root>/montage.json.lock，N-A1）：
-   UI 的保存是"全量覆写"，与 Agent 的交错会把对方更新写丢。
-   超时放弃锁（宁可写也不能卡死 UI 保存）；只有自己成功创建的锁才删除。 */
-function withProjectLock(absPath, fn, timeoutMs = 2000) {
+/* 与 MCP 的读-改-写共享同一个锁文件（<root>/montage.json.lock，N-A1）。
+   超时**不再降级为无锁写**（R3 D-2）：无锁全量覆写会静默吞掉 agent 刚写的更新，
+   且自写抑制使这次丢更新不会被回环广播暴露（双向静默）——宁可失败让调用方重试。
+   三参数与 MCP 对齐（R3 D-5）：陈锁阈值 10s / 等待超时 5s / 轮询 30ms。
+   只有自己成功创建的锁才删除。 */
+function withProjectLock(absPath, fn, timeoutMs = 5000) {
   const fsn = require('node:fs');
   const lock = absPath + '.lock';
   let held = false;
@@ -83,13 +85,15 @@ function withProjectLock(absPath, fn, timeoutMs = 2000) {
       held = true;
       break;
     } catch (e) {
-      if (e.code !== 'EEXIST') break;                    // 其它错误：尽力写，不加锁
+      if (e.code !== 'EEXIST') break;                    // 其它错误（如文件系统不支持 wx）：尽力写
       try {
         const st = fsn.statSync(lock);
         if (Date.now() - st.mtimeMs > 10000) { fsn.rmSync(lock, { force: true }); continue; }
       } catch (_) {}
-      if (Date.now() - t0 > timeoutMs) break;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      if (Date.now() - t0 > timeoutMs) {
+        throw new Error('工程正被其它进程写入（montage.json.lock），请稍后重试');
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
     }
   }
   try { return fn(); }
@@ -102,7 +106,10 @@ const approvedDirs = new Set();
 const approvedFiles = new Set();
 const approvePath = (set, p) => { try { set.add(path.normalize(path.resolve(p))); } catch (_) {} };
 const isApprovedPath = (set, p) => {
-  if (SMOKE || process.env.FABULA_EXPORT_TEST === '1') return true;
+  /* 只豁免冒烟模式（R3 D-6）：此前把 FABULA_EXPORT_TEST 复用为整个白名单
+     的总开关，任何置 1 的环境（CI/脚本）下 create/openDir/importPaths
+     三处守卫全部旁路。导出测试的显式路径由 EXPLICIT_PATH_OK 单独控制。 */
+  if (SMOKE) return true;
   try { return set.has(path.normalize(path.resolve(p))); } catch (_) { return false; }
 };
 
@@ -411,8 +418,11 @@ ipcMain.handle('project:writeFile', (_e, rel, bytes) => {
   } else {
     store.writeAtomic(abs, buf);
   }
-  /* 帧图/素材也是 UI 自写：登记以抑制 media 广播（否则每次保存都打断作画，N-A5 修订） */
-  if (/^(boards|assets|shots)\//.test(r.replace(/\\/g, '/'))) store.markSelfMedia(r.replace(/\\/g, '/'));
+  /* 帧图/素材也是 UI 自写：登记以抑制 media 广播（否则每次保存都打断作画，N-A5 修订）。
+     登记键用 normalize 后的相对路径（R3 B-15）：x/../boards/a.png 之类绕行写法
+     也归一到 boards/a.png，不会漏登记造成回环广播 */
+  const relNorm = path.normalize(String(r || '')).replace(/\\/g, '/');
+  if (/^(boards|assets|shots)\//.test(relNorm)) store.markSelfMedia(relNorm);
   return rel;
 });
 ipcMain.handle('project:deleteFile', (_e, rel) => {
@@ -488,9 +498,15 @@ ipcMain.handle('export:backupJson', async (_e, targetPath) => {
     if (r.canceled || !r.filePath) return { ok: false, canceled: true };
     dst = r.filePath;
   }
-  /* 备份动作本身也要原子：copyFileSync 直写覆盖，断电两头皆失（M-5） */
-  store.writeAtomic(dst, fsx.readFileSync(path.join(cur.root, 'fabula.json')));
-  return { ok: true, path: dst };
+  /* 备份当前工程（montage 模型）——与浏览器分支同源（R3 D-7）；
+     此前读 fabula.json，桌面用户拿到的备份与当前工程无关。
+     montage.json 不存在（极老工程）才回退 fabula.json，并如实告知来源。 */
+  const mont = path.join(cur.root, 'montage.json');
+  const src = fsx.existsSync(mont) ? mont : path.join(cur.root, 'fabula.json');
+  if (!fsx.existsSync(src)) return { ok: false, error: '工程文件不存在（montage.json / fabula.json）' };
+  /* 备份动作本身也要原子：直写覆盖，断电两头皆失（M-5） */
+  store.writeAtomic(dst, fsx.readFileSync(src));
+  return { ok: true, path: dst, source: path.basename(src) };
 });
 
 /* 冒烟自检专用（fabula shots 模型，数据源是 main 进程维护的 fabula.json）；

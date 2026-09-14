@@ -16,8 +16,10 @@
   --red-rgb: 235, 104, 75;
   --blue: #7bbbe3;
   --blue-rgb: 123, 187, 227;
-  --green: #6aa878;
+  --green: #6aa878;          /* 音频波形色（timeline.js 消费） */
   --green-rgb: 106, 168, 120;
+  /* 画面衬纸色：帧图多为"透明底 + 深色线"，所有"看画面"的容器统一用它（R3 B-8） */
+  --paper: #f5f0ea;
 
   --bg: #f7e6da;
   --card: rgba(253, 247, 240, 0.62);
@@ -218,7 +220,7 @@ input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border: 0; bo
 /* 任何长宽比的素材都等比缩到框内：不再用 width/height:100% 撑满，避免超高/超宽图出框 */
 .asset-thumb img {
   display: block; max-width: 100%; max-height: 100%; width: auto; height: auto;
-  background: #f5f0ea; border-radius: 5px;
+  background: var(--paper); border-radius: 5px;
 }
 .asset-info { min-width: 0; flex: 1; }
 .asset-name { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -427,7 +429,7 @@ textarea.sp-ctl { min-height: 34px; resize: vertical; line-height: 1.45; }
   max-width: 100%;
 }
 .clip-wave { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.clip-thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #f5f0ea; opacity: .9; pointer-events: none; }
+.clip-thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: var(--paper); opacity: .9; pointer-events: none; }
 
 .playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--red); pointer-events: none; z-index: 6; }
 .playhead i {
@@ -523,7 +525,7 @@ textarea.sp-ctl { min-height: 34px; resize: vertical; line-height: 1.45; }
 }
 .shot-pic.empty { border-style: dashed; }
 /* 有画面的单元格衬纸色：帧图多为"透明底 + 深色线"，深色模式下用 --stage 深底会看不清（用户反馈） */
-.shot-pic:not(.empty) { background: #f5f0ea; }
+.shot-pic:not(.empty) { background: var(--paper); }
 /* 行内编辑控件 */
 .shot-in { width: 100%; min-width: 0; box-sizing: border-box; }
 .shot-table select.shot-in {
@@ -561,7 +563,7 @@ textarea.sp-ctl { min-height: 34px; resize: vertical; line-height: 1.45; }
 .sc-pic img { max-width: 100%; max-height: 100%; display: block; }
 .sc-pic.empty { border: 1px dashed var(--border); color: var(--text-dim); font-size: 11px; }
 /* 故事板卡片同理：有画面时衬纸色，深色模式下也能看清透明底帧图 */
-.sc-pic:not(.empty) { background: #f5f0ea; }
+.sc-pic:not(.empty) { background: var(--paper); }
 .sc-tags { display: flex; gap: 4px; flex-wrap: wrap; }
 .sc-tags i { font-style: normal; font-size: 9.5px; background: rgba(var(--red-rgb), .14); color: var(--red); border-radius: 4px; padding: 1px 5px; }
 .sc-txt { font-size: 10.5px; line-height: 1.5; max-height: 4.5em; overflow: hidden; }
@@ -921,7 +923,7 @@ input[data-tag] {
 .sd-pic {
   /* 纸色衬底：深色模式下透明底帧图也能看清（与 .shot-pic/.sc-pic 同理）；
      color 给空态"＋ 画"文字一个在浅底上可读的深灰 */
-  aspect-ratio: 16 / 9; background: #f5f0ea; color: #6b625a; border: 1px solid var(--border);
+  aspect-ratio: 16 / 9; background: var(--paper); color: #6b625a; border: 1px solid var(--border);
   border-radius: 10px; display: grid; place-items: center; overflow: hidden; cursor: pointer;
 }
 .sd-pic img { max-width: 100%; max-height: 100%; display: block; }

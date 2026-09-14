@@ -86,7 +86,6 @@
       hint.textContent = s && !s.boardId
         ? '空镜头 —— 点工具条「新建帧」为它补画面'
         : (p.boards.length ? '播放头停在片段之外' : '还没有分镜帧 —— 点「新建帧」开始');
-      MTG.board.syncCursor();
       MTG.ui.syncShotPanel();
     },
 
@@ -319,8 +318,7 @@
        之后再 flush 会把旧工程的笔迹写进新工程（旧工程最后几笔静默丢失） */
     if (MTG.storage.ready && MTG.state.project) {
       try {
-        await MTG.board.flush();
-        if (MTG.state.dirty) await MTG.storage.saveProject(MTG.state.project);
+        await saveTick();                        // 走串行闸（R3 B-12）：与落笔 debounce 不并发
       } catch (err) {
         console.warn('[app] 切工程前保存失败', err);
       }
@@ -387,6 +385,11 @@
       if (saveAgain) { saveAgain = false; saveTick(); }
     }
   }
+  /* 等待进行中的串行保存结束（R3 B-12）：需要"明确结果"的保存路径
+     （手动保存/关窗/外部合并回写）先过这道闸，避免与 saveTick 并发写。 */
+  async function waitSaveIdle() {
+    for (let i = 0; i < 100 && saving; i++) await new Promise(r => setTimeout(r, 120));
+  }
   const autosave = U.debounce(saveTick, 4000);
   const origMark = MTG.markDirty;
   MTG.markDirty = function () { origMark(); autosave(); };
@@ -401,6 +404,7 @@
     });
     $('btn-save').onclick = async () => {
       if (!MTG.storage.ready) { MTG.toast('请先打开工程文件夹', true); return; }
+      await waitSaveIdle();                         // 与自动保存串行（R3 B-12）
       await MTG.board.flush();                      // 画板内容先落进帧 PNG
       await MTG.storage.saveProject(MTG.state.project);
       MTG.toast('工程已保存');
@@ -525,7 +529,6 @@
           MTG.brushes.saveParams(MTG.board.brushId, MTG.board.bp);
         }
         $(id + '-v').textContent = el.value;
-        if (key === 'size') MTG.board.refreshRing();   // 大小滑杆 → 光标环直径即时更新
       };
     };
     bindSlider('b-size', 'size');
@@ -533,7 +536,7 @@
     /* 压感相关滑杆/复选已删：它们写的引擎键不存在（N-A8）；压感参数在设置面板「笔刷」页 */
 
     /* 洋葱皮 */
-    const onion = () => { MTG.board.preloadOnion(); MTG.board.paint(); MTG.ui.syncBoardMeta(); };
+    const onion = () => { MTG.board.preloadOnion(); MTG.ui.syncBoardMeta(); };
     $('onion-on').onchange = e => { MTG.board.onion.on = e.target.checked; $('btn-onion').classList.toggle('active', e.target.checked); onion(); };
     $('btn-onion').onclick = () => {
       MTG.board.onion.on = !MTG.board.onion.on;
@@ -550,7 +553,7 @@
     bindOnion('onion-opacity', 'opacity');
 
     /* 参考层 */
-    $('ref-show').onchange = e => { MTG.board.showRef = e.target.checked; MTG.board.paint(); };
+    $('ref-show').onchange = e => { MTG.board.showRef = e.target.checked; };
     $('ref-clear').onclick = () => MTG.board.clearRef();
 
     /* 画幅 */
@@ -716,7 +719,6 @@
           MTG.board.spaceHeld = true;
           MTG.board.spaceDownAt = Date.now();
           MTG.board.spacePanned = false;
-          MTG.board.syncCursor();
         }
         return;
       }
@@ -728,7 +730,6 @@
       if (MTG.radial.open && combo === MTG.settings.get('radialKey')) { MTG.radial.close(true); return; }
       if (MTG.board.spaceHeld && combo === MTG.settings.keyOf('cmd.play')) {
         MTG.board.spaceHeld = false;
-        MTG.board.syncCursor();
         if (!MTG.board.spacePanned && Date.now() - MTG.board.spaceDownAt < 260) {
           MTG.audio.playing ? MTG.audio.pause() : MTG.audio.play();
         }
@@ -742,6 +743,7 @@
     if (window.fabula && window.fabula.app && window.fabula.app.onBeforeClose) {
       window.fabula.app.onBeforeClose(async () => {
         try {
+          await waitSaveIdle();                        // 与自动保存串行（R3 B-12）
           await MTG.board.flush();
           if (MTG.state.dirty && MTG.storage.ready) await MTG.storage.saveProject(MTG.state.project);
         } catch (err) { console.warn('[app] 关窗保存失败', err); }
@@ -751,7 +753,8 @@
       window.addEventListener('beforeunload', () => {
         if (!MTG.board.dirty && !MTG.state.dirty) return;
         MTG.board.flush();                             // 尽力而为：浏览器不保证异步完成
-        if (MTG.storage.ready) MTG.storage.saveProject(MTG.state.project);
+        /* 串行保存进行中则跳过本次兜底（R3 B-12）：并发全量写会撕裂文件 */
+        if (!saving && MTG.storage.ready) MTG.storage.saveProject(MTG.state.project);
       });
     }
 
@@ -811,6 +814,7 @@
       MTG.state.selectedClipIds = new Set();
       if (!mem) MTG.state.playhead = 0;
       if (mem && dirty) {
+        await waitSaveIdle();                    // 与自动保存串行（R3 B-12）
         await MTG.storage.saveProject(merged);   // 合并结果写回：Agent 的新增与本地编辑一起持久化
       }
       await applyProject();
@@ -831,10 +835,23 @@
      · 用户自己的保存（flush）已由主进程自写抑制吞掉，不会走到这里。 */
   async function refreshMedia(files) {
     const list = Array.isArray(files) ? files : [];
+    /* 缓存失效（R3 B-11/B-13）：
+       · 缩略图（各帧图都可能涉及）与洋葱皮：全清；
+       · 洋葱皮 in-flight：代际 +1 作废（慢加载回来的旧图不得回填脏缓存）；
+       · 素材库：只精确淘汰清单里真正被改的素材（dropUrl + 波形缓存），
+         不整表 resetCaches —— 后者会连 collapsed 折叠状态一起清掉。 */
     MTG.board.thumbCache.forEach((u) => URL.revokeObjectURL(u));
     MTG.board.thumbCache.clear();
     MTG.board.onionCache.clear();
-    MTG.assets.resetCaches();
+    MTG.board.onionLoading.clear();
+    MTG.board._ogen++;
+    for (const rel of list) {
+      const a = (MTG.state.project && MTG.state.project.assets || []).find(x => x.path === rel);
+      if (a) {
+        MTG.assets.dropUrl(a.id);
+        if (MTG.audio && MTG.audio.cache) MTG.audio.cache.delete(a.id);
+      }
+    }
     const b = MTG.state.currentBoardId ? MTG.findBoard(MTG.state.currentBoardId) : null;
     const curChanged = !!(b && list.includes(b.path));
     if (curChanged && !MTG.board.dirty) {
@@ -861,6 +878,13 @@
     union('tracks'); union('groups'); union('boards'); union('assets');
     const cids = new Set((out.clips || []).map((c) => c.id));
     for (const c of (disk.clips || [])) if (!cids.has(c.id)) out.clips.push(c);
+    /* tagOptions：按 key 做选项并集（R3 B-14）——当前 MCP 不写，但合并语义要完整 */
+    out.tagOptions = out.tagOptions || {};
+    for (const [k, list] of Object.entries(disk.tagOptions || {})) {
+      if (!Array.isArray(list)) continue;
+      const cur = Array.isArray(out.tagOptions[k]) ? out.tagOptions[k] : (out.tagOptions[k] = []);
+      for (const v of list) if (!cur.includes(v)) cur.push(v);
+    }
     return out;
   }
 
@@ -879,7 +903,6 @@
     }
     const el = $('b-size');
     if (el) { el.value = next; $('b-size-v').textContent = next; }
-    MTG.board.refreshRing();
     MTG.toast('笔刷大小 ' + next);
   }
 
@@ -906,8 +929,6 @@
       st.classList.toggle('tool-hand', t === 'hand');
       st.classList.toggle('tool-zoom', t === 'zoom');
     }
-    MTG.board.syncCursor();
-    MTG.board.refreshRing();
   }
 
   /* 画幅选择器与工程同步：预设匹配就选中，否则进入自定义 */

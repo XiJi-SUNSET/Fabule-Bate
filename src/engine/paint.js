@@ -1857,7 +1857,14 @@ function pickColorAt(d) {
   gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   const a = px[3] / 255;
-  const paper = [0xf5 / 255, 0xf0 / 255, 0xea / 255];   // 与 board.js 的纸色 #f5f0ea 一致（L-20）
+  /* 纸色从 CSS token --paper 读（单一来源，R3 B-8）；吸管低频调用，就地读无性能问题 */
+  let paper = [0xf5 / 255, 0xf0 / 255, 0xea / 255];
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--paper').trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(v)) {
+      paper = [parseInt(v.slice(1, 3), 16) / 255, parseInt(v.slice(3, 5), 16) / 255, parseInt(v.slice(5, 7), 16) / 255];
+    }
+  } catch (_) {}
   color = [0, 1, 2].map(i => (px[i] / 255) * a + paper[i] * (1 - a));
   notifyColor();
   return true;

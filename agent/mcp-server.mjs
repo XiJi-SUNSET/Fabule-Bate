@@ -435,7 +435,12 @@ tool(
       if (!(buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47)) {
         throw new Error('不是有效的 PNG 数据（magic 校验失败）');
       }
+      /* 与主进程对称的 96MB 上限（R3 D-3）：无界载荷在持锁期落盘会放大窃锁窗口（D-5） */
+      if (buf.length > 96 * 1024 * 1024) throw new Error('图片超过 96MB 上限');
 
+      /* 载荷已有界（≤96MB，单次写 <1s，远小于 10s 陈锁阈值）；
+         写清单失败 → onWriteError 删掉刚写的图，不留"有文件无清单"的幽灵帧（R3 D-3） */
+      let wroteAbs = null;
       return mutate(root, (p) => {
         const c = findClip(p, id);
         let b = c.boardId ? p.boards.find((x) => x.id === c.boardId) : null;
@@ -450,8 +455,11 @@ tool(
           b.path = 'boards/' + String(b.id).replace(/[^A-Za-z0-9_-]/g, '_') + '.png';
         }
         ensureDir(path.join(root, 'boards'));
-        fs.writeFileSync(path.join(root, b.path), buf);
+        wroteAbs = path.join(root, b.path);
+        fs.writeFileSync(wroteAbs, buf);
         return ok({ id, image: b.path, kind: 'png', bytes: buf.length });
+      }, () => {
+        if (wroteAbs) { try { fs.rmSync(wroteAbs, { force: true }); } catch (_) {} }
       });
     } catch (e) { return fail(e); }
   },
@@ -487,35 +495,42 @@ tool(
   async ({ paths: srcs, group, projectPath }) => {
     try {
       const root = resolveProject(projectPath);
-      const copied = [];                     // 已复制的媒体路径：写清单失败时回滚（N-B16）
+      /* 媒体 IO 移出锁（R3 D-4）：先复制到 assets/（唯一名），再持锁只做内存操作 +
+         小文件清单写。批量导入大素材不再放大"陈锁窃取"窗口（D-5）。
+         写清单失败 → onWriteError 删掉本次复制的全部媒体（N-B16）。 */
+      const staged = [];                     // { src, dst, kind, ext }
+      const skipped = [];
+      for (const p of srcs) {
+        const src = path.resolve(p);
+        const ext = path.extname(src).toLowerCase();
+        const kind = ['.png', '.jpg', '.jpeg', '.webp'].includes(ext) ? 'image'
+          : ['.mp3', '.wav', '.m4a', '.ogg'].includes(ext) ? 'audio' : null;
+        if (!kind || !fs.existsSync(src)) { skipped.push(p); continue; }
+        const base = path.basename(src).replace(/[^A-Za-z0-9._-]/g, '_');
+        const dstDir = path.join(root, 'assets', kind);
+        ensureDir(dstDir);
+        let dst = path.join(dstDir, base);
+        let n = 1;
+        while (fs.existsSync(dst)) {
+          const e2 = path.extname(base);
+          dst = path.join(dstDir, base.slice(0, base.length - e2.length) + '-' + (n++) + e2);
+        }
+        fs.copyFileSync(src, dst);
+        staged.push({ src, dst, kind, ext });
+      }
+      const copied = staged.map((s) => 'assets/' + s.kind + '/' + path.basename(s.dst));
       return mutate(root, (proj) => {
-        const added = [], skipped = [];
-        for (const p of srcs) {
-          const src = path.resolve(p);
-          const ext = path.extname(src).toLowerCase();
-          const kind = ['.png', '.jpg', '.jpeg', '.webp'].includes(ext) ? 'image'
-            : ['.mp3', '.wav', '.m4a', '.ogg'].includes(ext) ? 'audio' : null;
-          if (!kind || !fs.existsSync(src)) { skipped.push(p); continue; }
-          const base = path.basename(src).replace(/[^A-Za-z0-9._-]/g, '_');
-          const dstDir = path.join(root, 'assets', kind);
-          ensureDir(dstDir);
-          let dst = path.join(dstDir, base);
-          let n = 1;
-          while (fs.existsSync(dst)) {
-            const e2 = path.extname(base);
-            dst = path.join(dstDir, base.slice(0, base.length - e2.length) + '-' + (n++) + e2);
-          }
-          fs.copyFileSync(src, dst);
+        const added = [];
+        for (const s of staged) {
           const asset = {
             id: genId('as'),
-            name: path.basename(src, ext).slice(0, 120) || '素材',
-            kind,
-            path: 'assets/' + kind + '/' + path.basename(dst),
+            name: path.basename(s.src, s.ext).slice(0, 120) || '素材',
+            kind: s.kind,
+            path: 'assets/' + s.kind + '/' + path.basename(s.dst),
             group: (proj.groups.some((g) => g.id === group) ? group : null),   // 只收已知分组 id
           };
           proj.assets.push(asset);
-          copied.push(asset.path);
-          added.push({ id: asset.id, name: asset.name, kind, path: asset.path });
+          added.push({ id: asset.id, name: asset.name, kind: s.kind, path: asset.path });
         }
         return ok({ added, skipped, assetCount: proj.assets.length });
       }, () => {
@@ -560,7 +575,16 @@ function validate(schema, args) {
 }
 
 /* ════════ JSON-RPC over stdio ════════ */
-function send(msg) { process.stdout.write(JSON.stringify(msg) + '\n'); }
+function send(msg) {
+  /* 同步写 fd 1（R3 B-17）：process.stdout.write 不处理背压——管道塞满时
+     消息滞留在用户态缓冲，客户端读到"卡住"。writeSync 阻塞直到写完。 */
+  const buf = Buffer.from(JSON.stringify(msg) + '\n', 'utf8');
+  let off = 0;
+  while (off < buf.length) {
+    try { off += fs.writeSync(1, buf, off); }
+    catch (e) { if (e.code === 'EAGAIN') { sleepSync(5); continue; } throw e; }
+  }
+}
 
 async function handle(line) {
   let m;

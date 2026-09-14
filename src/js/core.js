@@ -266,7 +266,7 @@
     hsv: { h: 14, s: 70, v: 68 },
     tool: 'brush',
     layer: 'fg',
-    brush: { size: 14, opacity: 100, pressure: 85, usePressure: true },
+    brush: { size: 14, opacity: 100 },
     theme: localStorage.getItem('montage.theme') || 'dark',
     dirty: false
   };

@@ -171,7 +171,9 @@
     keyOf(id) {
       /* 轮盘呼出键的事实来源是 radialKey（录制器写它）：不统一的话
          用户改绑后 UI 显示新键、实际仍只有默认 V 能呼出（N-A7） */
-      if (id === 'cmd.radial') return S.data.radialKey || 'V';
+      /* 清空（''）表示用户主动解绑 → 真的不绑定；undefined/缺失才回退默认 V
+         （R3 B-1：此前 `|| 'V'` 让"已清空"回退 V，面板显示未设置但按键仍生效） */
+      if (id === 'cmd.radial') return S.data.radialKey !== undefined ? S.data.radialKey : 'V';
       const custom = S.data.keys[id];
       if (custom !== undefined) return custom;          // '' = 用户主动清空
       const a = S.action(id);
@@ -485,8 +487,16 @@
           document.removeEventListener('keydown', onKey, true);
           btn.classList.remove('rec');
           if (combo === null) { btn.textContent = old; return; }
-          if (id === 'cmd.radial') S.set('radialKey', combo);
-          else S.setKey(id, combo);
+          if (id === 'cmd.radial') {
+            /* 撞键清理（R3 B-2）：轮盘键此前绕过 setKey 的占用清理，
+               录到已被占用的键位会把对方静默抢走、且该键位无法再录回来 */
+            if (combo) {
+              for (const a of ACTIONS) {
+                if (a.id !== 'cmd.radial' && S.keyOf(a.id) === combo) S.data.keys[a.id] = '';
+              }
+            }
+            S.set('radialKey', combo);
+          } else S.setKey(id, combo);
           S.ui.render();
           MTG.toast(combo ? '已设为 ' + pretty(combo) : '已清除该快捷键');
         };
@@ -513,8 +523,6 @@
       if (snapEl) snapEl.checked = !!d.snap;
       if (MTG.board) {
         MTG.board.trimUndo && MTG.board.trimUndo();   // 撤销栈深可能改小了
-        MTG.board.paint && MTG.board.paint();
-        MTG.board.refreshRing && MTG.board.refreshRing();
       }
       /* 压感参数（曲线/死区/饱和点/速度参考）改动立即套用到引擎（L-26） */
       const eng = window.__fabulaEngine;

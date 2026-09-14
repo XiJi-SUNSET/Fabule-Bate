@@ -157,7 +157,16 @@
     },
     async saveProject(proj) {
       const json = JSON.stringify(proj, null, 2);
-      await S.writeFile(MTG.PROJECT_FILE, new Blob([json], { type: 'application/json' }));
+      const blob = () => new Blob([json], { type: 'application/json' });
+      try {
+        await S.writeFile(MTG.PROJECT_FILE, blob());
+      } catch (err) {
+        /* 与 Agent 抢锁失败（main 侧 5s 超时抛错，R3 D-2）→ 退避重试一次；
+           仍失败则抛出，由调用方保留 dirty 并提示（不再是"降级无锁写"） */
+        if (!/正被其它进程写入/.test(String((err && err.message) || err))) throw err;
+        await new Promise(r => setTimeout(r, 800));
+        await S.writeFile(MTG.PROJECT_FILE, blob());
+      }
       MTG.state.dirty = false;
     },
 

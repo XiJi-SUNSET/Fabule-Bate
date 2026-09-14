@@ -421,7 +421,6 @@
         S.pmShot = shot;
         /* 画板面板搬进弹窗后舞台尺寸骤变：先让引擎重建画布分辨率再适配（H-8） */
         requestAnimationFrame(() => { window.dispatchEvent(new Event('resize')); MTG.board.fitView(); });
-        MTG.board.paint();
       } finally {
         S._pmBusy = false;
       }
