@@ -755,6 +755,47 @@
       return JSON.stringify(out);
     },
 
+    /* 分组重命名探针：dblclick 分组名 → 输入框出现？→ 提交 → 模型写回？ */
+    async groupRenameProbe() {
+      const out = {};
+      try {
+        let p = MTG.state.project;
+        if (!p) {
+          p = MTG.state.project = {
+            name: 'gr-probe', boardW: 1280, boardH: 720, fps: 12,
+            tracks: [], clips: [], assets: [], boards: [], tagOptions: {}, groups: []
+          };
+        }
+        if (!Array.isArray(p.groups)) p.groups = [];
+        if (!p.groups.some(g => g.id === 'g-probe')) p.groups.push({ id: 'g-probe', name: '旧组名' });
+        if (!p.assets.length) {
+          p.assets.push({ id: 'as-probe', name: '素材A', kind: 'image', path: 'assets/image/a.png', group: 'g-probe' });
+        } else {
+          p.assets[0].group = 'g-probe';
+        }
+        await MTG.assets.render();
+        const nm = document.querySelector('.group-head[data-gid="g-probe"] .g-name');
+        if (!nm) { out.error = '找不到分组名元素（render 没产出该分组？）'; return JSON.stringify(out); }
+        out.found = true;
+        nm.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+        await new Promise(r => setTimeout(r, 80));
+        const input = nm.querySelector('.g-rename');
+        out.inputAppeared = !!input;
+        if (input) {
+          input.value = '新组名';
+          /* 真实回车路径（onkeydown → input.blur() → commit） */
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+          await new Promise(r => setTimeout(r, 120));
+          const g = MTG.state.project.groups.find(x => x.id === 'g-probe');
+          out.nameAfter = g && g.name;
+          out.renamed = !!(g && g.name === '新组名');
+          const nm2 = document.querySelector('.group-head[data-gid="g-probe"] .g-name');
+          out.domAfter = nm2 && nm2.textContent;
+        }
+      } catch (e) { out.error = (e && e.message) || String(e); }
+      return JSON.stringify(out);
+    },
+
     /* 状态快照：引擎 / 画板 / 工程 / 错误层 四面 */
     async status() {
       const out = { engine: null, board: null, project: null, err: '' };

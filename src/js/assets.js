@@ -79,23 +79,36 @@
       nm.className = 'g-name';
       nm.textContent = s.name;
       nm.title = '双击重命名';
-      nm.ondblclick = () => {
+      nm.ondblclick = (ev) => {
+        /* 用户反馈"能输入但确认后没变"：旧实现把提交挂在 input.blur() 上 ——
+           双击的后续默认行为会抢焦点 / blur 未必派发，commit 永远不执行。
+           重写为：回车/失焦直接 commit（done 防重入）、Escape 真取消、
+           延迟聚焦防"闪一下"、值未变不脏标记。 */
+        if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+        if (nm.querySelector('.g-rename')) return;      // 已在编辑态
         const input = document.createElement('input');
         input.value = s.name;
         input.className = 'g-rename';
         nm.textContent = '';
         nm.appendChild(input);
-        input.focus(); input.select();
-        const commit = () => {
-          const v = input.value.trim();
+        let done = false;
+        const commit = (cancel) => {
+          if (done) return;
+          done = true;
+          const v = cancel ? s.name : input.value.trim();
           if (v && s.id) {
             const g = MTG.state.project.groups.find(x => x.id === s.id);
-            if (g) { g.name = v; MTG.markDirty(); }
+            if (g && g.name !== v) { g.name = v; MTG.markDirty(); }
           }
           A.render();
         };
-        input.onblur = commit;
-        input.onkeydown = ev => { if (ev.key === 'Enter') input.blur(); if (ev.key === 'Escape') { input.value = s.name; input.blur(); } };
+        input.onblur = () => commit(false);
+        input.onkeydown = e2 => {
+          if (e2.key === 'Enter') { e2.preventDefault(); commit(false); }
+          if (e2.key === 'Escape') { e2.preventDefault(); commit(true); }
+        };
+        /* 延迟聚焦：双击的默认行为（选中/后续 click）会抢走焦点，立即 focus 可能被覆盖 */
+        requestAnimationFrame(() => { try { input.focus(); input.select(); } catch (_) {} });
       };
 
       const cnt = document.createElement('span');
