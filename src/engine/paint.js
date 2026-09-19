@@ -2043,7 +2043,7 @@ ovc.addEventListener('pointermove', (e) => {
   if (tool === 'zoom' && zoomDrag) {
     const dx = e.clientX - zoomDrag.x;
     if (Math.abs(dx) > zoomDrag.moved) zoomDrag.moved = Math.abs(dx);
-    const target = Math.max(0.02, Math.min(64, zoomDrag.s0 * Math.exp(dx * 0.006)));
+    const target = clampScale(zoomDrag.s0 * Math.exp(dx * 0.006));
     if (target !== view.scale) zoomAt(zoomDrag.x, zoomDrag.y, target / view.scale);
     return;
   }
@@ -2477,7 +2477,7 @@ ovc.addEventListener('wheel', (e) => {
   const sx = (e.clientX - r.left) * k, sy = (e.clientY - r.top) * k;
   const before = { x: (sx - view.x) / view.scale, y: (sy - view.y) / view.scale };
   const f = Math.exp(-e.deltaY * 0.0016);
-  view.scale = Math.min(14, Math.max(0.06, view.scale * f));
+  view.scale = clampScale(view.scale * f);
   view.x = sx - before.x * view.scale;
   view.y = sy - before.y * view.scale;
 }, { passive: false });
@@ -2814,14 +2814,21 @@ function setView(v) {
   }
   notifyView();
 }
+/* 视图缩放的绝对边界（M-10：此前三套 clamp 并存 —— 滚轮 0.06~14、缩放工具 0.02~64、
+   zoomAt 只夹"倍数"不夹结果 → 连点按钮能到几十万 %。统一到这里） */
+const SCALE_MIN = 0.06, SCALE_MAX = 14;
+function clampScale(s) { return Math.min(SCALE_MAX, Math.max(SCALE_MIN, s)); }
+
 /* 以某个客户端坐标为锚点缩放（滚轮/捏合/按钮都走这里，保证锚点行为一致） */
 function zoomAt(clientX, clientY, factor) {
   const r = glc.getBoundingClientRect();
   if (!r.width || !r.height) return;
   const px = (clientX - r.left) * (glc.width / r.width);
   const py = (clientY - r.top) * (glc.height / r.height);
-  const k = Math.max(0.02, Math.min(64, factor));
-  view.scale *= k;
+  const k0 = Math.max(0.02, Math.min(64, factor));
+  const next = clampScale(view.scale * k0);
+  const k = next / view.scale;        // 实际生效的比例（触界时锚点仍不漂）
+  view.scale = next;
   view.x = px - (px - view.x) * k;
   view.y = py - (py - view.y) * k;
   notifyView();

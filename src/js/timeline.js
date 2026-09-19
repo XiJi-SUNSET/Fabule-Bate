@@ -156,8 +156,9 @@
       TL.updatePlayhead();
       TL.el.scroll.scrollLeft = sl;
       TL.el.scroll.scrollTop = st;
-      const mins = Math.floor(MTG.projectEnd() / 60), secs = Math.round(MTG.projectEnd() % 60);
-      TL.el.info.textContent = p.clips.length + ' 个片段 · 总长 ' + mins + ':' + String(secs).padStart(2, '0');
+      /* 低项：总长用内容长度（不含 10s 可视余量），格式化走 U.tc（修 "0:60" 假分秒） */
+      const total = (MTG.contentEnd && MTG.contentEnd()) || MTG.projectEnd();
+      TL.el.info.textContent = p.clips.length + ' 个片段 · 总长 ' + U.tc(total);
       TL.syncOverlapBtn();
     },
 
@@ -205,12 +206,30 @@
         const del = document.createElement('button');
         del.className = 'th-btn';
         del.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+        /* 低项：删轨二次确认（同删镜头模式）+ 清掉悬空的 activeTrackId */
         del.title = '删除轨道及其片段';
         del.onclick = () => {
           if (p.tracks.length <= 1) { MTG.toast('至少保留一条轨道', true); return; }
+          if (TL._delTrackArm !== tr.id) {
+            TL._delTrackArm = tr.id;
+            clearTimeout(TL._delTrackTimer);
+            TL._delTrackTimer = setTimeout(() => {
+              TL._delTrackArm = null;
+              const b = document.querySelector('.tl-head .th-btn.armed');
+              if (b) { b.classList.remove('armed'); b.title = '删除轨道及其片段'; }
+            }, 3000);
+            del.classList.add('armed');
+            del.title = '再点一次确认删除';
+            MTG.toast('再点一次确认删除轨道「' + tr.name + '」及其上的 ' + p.clips.filter(c => c.trackId === tr.id).length + ' 个片段');
+            return;
+          }
+          TL._delTrackArm = null;
+          clearTimeout(TL._delTrackTimer);
           p.tracks = p.tracks.filter(x => x.id !== tr.id);
           p.clips = p.clips.filter(c => c.trackId !== tr.id);
+          if (MTG.state.activeTrackId === tr.id) MTG.state.activeTrackId = null;
           MTG.markDirty(); MTG.render();
+          MTG.toast('已删除轨道：' + tr.name);
         };
 
         d.appendChild(grip); d.appendChild(kind); d.appendChild(nm);
@@ -710,27 +729,33 @@
       return s;
     },
 
-    /* 重叠检测：返回参与重叠的片段 id 集合（历史工程可能已经有重叠数据） */
+    /* 重叠检测：返回参与重叠的片段 id 集合（历史工程可能已经有重叠数据）。
+       低项：改两两比较 —— 只查相邻对时"A 很长、C 完全压在里面"会被漏标红 */
     overlaps() {
       const p = MTG.state.project;
       const bad = new Set();
       if (!p) return bad;
       p.tracks.forEach(tr => {
         const list = TL.trackClips(tr.id, null);
-        for (let i = 1; i < list.length; i++) {
-          if (list[i].start < list[i - 1].start + list[i - 1].dur - 1e-6) {
-            bad.add(list[i].id);
-            bad.add(list[i - 1].id);
+        for (let i = 0; i < list.length; i++) {
+          for (let j = i + 1; j < list.length; j++) {
+            const a = list[i], b = list[j];
+            if (a.start < b.start + b.dur - 1e-6 && a.start + a.dur > b.start + 1e-6) {
+              bad.add(a.id); bad.add(b.id);
+            }
           }
         }
       });
       return bad;
     },
 
-    /* 整理重叠：按轨道逐个顺推，保序且不删任何片段 */
+    /* 整理重叠：按轨道逐个顺推，保序且不删任何片段。
+       返回 { moved: 顺推次数, involved: 受影响的片段数 } ——
+       与按钮上的计数（overlaps().size = 片段数）统一口径（低项） */
     fixOverlaps() {
       const p = MTG.state.project;
-      if (!p) return 0;
+      if (!p) return { moved: 0, involved: 0 };
+      const involved = TL.overlaps().size;
       let n = 0;
       p.tracks.forEach(tr => {
         const list = TL.trackClips(tr.id, null);
@@ -740,7 +765,7 @@
         }
       });
       if (n) { MTG.markDirty(); MTG.render(); }
-      return n;
+      return { moved: n, involved };
     },
 
     syncOverlapBtn() {

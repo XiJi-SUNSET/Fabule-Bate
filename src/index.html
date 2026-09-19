@@ -46,7 +46,7 @@
     <div class="tb-group">
       <span id="save-state" class="save-state" data-st="idle" title="保存状态">—</span>
       <button id="btn-save" class="btn" title="保存工程（Ctrl+S）">保存</button>
-      <button id="btn-export" class="btn ghost" title="导出工程 JSON / 图片序列">导出</button>
+      <button id="btn-export" class="btn ghost" title="导出：桌面版输出镜头帧序列 PNG（01.png…）；浏览器版下载工程 JSON">导出</button>
       <button id="btn-theme" class="btn icon ghost" title="切换明暗"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="7.5"/><path d="M12 4.5a7.5 7.5 0 0 0 0 15z" fill="currentColor" stroke="none"/></svg></button>
       <button id="btn-settings" class="btn icon ghost" title="设置：快捷键 / 个性化 / 轮盘菜单">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -139,6 +139,10 @@
             </button>
             <button class="tool" data-tool="lasso" title="套索 (Q)：圈出选区 → 可移动内容 / 填充 / 删除，绘制只影响选区内">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.7 14.47a10 8 0 1 1 3.12 2.37"/><path d="M7 22a5 5 0 0 1-2-3.99"/></svg>
+            </button>
+            <!-- 低项：油漆桶此前无任何入口（引擎已实现）——可在设置里给它录快捷键 -->
+            <button class="tool" data-tool="fill" title="油漆桶：在封闭区域填充当前颜色（受选区约束，快捷键可在设置里录）">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13.5 12.5 6l6 6-7.5 7.5H7a2 2 0 0 1-2-2z"/><path d="M13.5 5 19 10.5"/><path d="M19.5 16.5c1.1 1.6 2 2.6 2 3.4a2 2 0 1 1-4 0c0-.8.9-1.8 2-3.4z"/></svg>
             </button>
             <button class="tool" data-tool="smudge" title="涂抹 (S)：把颜色往外拖，混色过渡">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18c3 0 4-3 6-6s4-6 8-6"/><circle cx="14" cy="6" r="2.6"/></svg>
@@ -234,7 +238,7 @@
             <div class="side-title">笔刷</div>
             <div id="brush-list" class="brush-list"></div>
             <div id="brush-params"></div>
-            <div class="slider-row"><label>大小</label><input id="b-size" type="range" min="1" max="200" value="14"><span id="b-size-v">14</span></div>
+            <div class="slider-row"><label>大小</label><input id="b-size" type="range" min="1" max="400" value="14"><span id="b-size-v">14</span></div>
             <div class="slider-row"><label>不透明</label><input id="b-opacity" type="range" min="1" max="100" value="100"><span id="b-opacity-v">100</span></div>
             <!-- 压感参数（死区/饱和点/速度参考）在 设置 → 笔刷 页；这里不放无消费者的滑杆（N-A8） -->
           </div>
@@ -244,8 +248,8 @@
             <div class="sel-btns">
               <button class="btn tiny" id="sel-fill" title="用当前颜色填满选区">填充</button>
               <button class="btn tiny ghost" id="sel-del" title="删除选区内的画面内容">删除内容</button>
-              <button class="btn tiny ghost" id="sel-commit" title="把选区内容落回画面（Enter）">落回画面</button>
-              <button class="btn tiny ghost" id="sel-cancel" title="取消选区（Esc）">取消选区</button>
+              <button class="btn tiny ghost" id="sel-commit" title="结束选区编辑（Enter）——选区内的内容固定在画面上">结束选区</button>
+              <button class="btn tiny ghost" id="sel-cancel" title="取消选区（Esc）——画面内容保留，不会回滚已移动的像素">取消选区</button>
             </div>
             <div class="hint">套索圈好后：在选区内拖动 = 移动内容 · 之后所有绘制只影响选区内</div>
           </div>

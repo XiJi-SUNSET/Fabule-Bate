@@ -116,6 +116,7 @@ function writeShotImage(shotId, dataUrl) {
   shot.image = rel;
   state.lastJson = writeJsonAtomic(path.join(state.root, 'fabula.json'), state.project);
   state.selfWriteAt = Date.now();
+  markSelfMedia(rel);      // M-15：帧图是自身写入，登记后在 watch 里不当作"外部媒体变更"广播
   return snapshot();
 }
 
@@ -271,13 +272,15 @@ function importAssets(filePaths) {
       if (!kind) { skipped++; continue; }
       const id = genAssetId();
       let ext = path.extname(src).toLowerCase().replace(/[^.a-z0-9]/g, '');
-      if (!ext || ext.length > 6) ext = kind === 'image' ? '.png' : '.mp3';
+      if (!ext || ext.length > 7) ext = kind === 'image' ? '.png' : '.mp3';
       /* 磁盘文件名保留原名（净化非法字符 + 重名 -1/-2 去重；允许中文），
-         与 MCP import_assets / 渲染端导入规则一致 —— 此前用素材 id 命名
-         （哈希形态），用户打开 assets 文件夹无法辨认文件（用户反馈） */
-      const base = (path.basename(src, path.extname(src))
+         与 MCP import_assets / 渲染端 U.safeFileName 同一规则 —— 此前用素材 id 命名
+         （哈希形态），用户打开 assets 文件夹无法辨认文件（用户反馈）。
+         边缘防护：主干去首点（防 ".." 路径前缀）/去尾点空格（Windows 会剥尾点造成名字漂移） */
+      let base = path.basename(src, path.extname(src))
         .replace(/[^A-Za-z0-9._\u4e00-\u9fa5-]/g, '_')
-        .slice(0, 80)) || 'asset';
+        .slice(0, 80);
+      base = base.replace(/^\.+/, '_').replace(/[. ]+$/, '') || 'asset';
       let fname = base + ext, n = 0;
       while (fs.existsSync(path.join(state.root, 'assets', kind, fname))) {
         fname = base + '-' + (++n) + ext;

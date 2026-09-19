@@ -68,12 +68,14 @@
         sections.push({ id: g.id, name: g.name, list, fixed: false });
       });
       const rest = items.filter(i => !used.has(i.type + ':' + i.id) || i.group == null);
-      if (rest.length || !sections.length) sections.push({ id: null, name: '未分组', list: rest, fixed: true });
+      /* 低项：只要有分组就保留"未分组"节（哪怕为空）—— 它是"把条目拖出分组"的唯一落点 */
+      sections.push({ id: null, name: '未分组', list: rest, fixed: true });
 
       let any = false;
+      const hasGroups = sections.some(x => x.id);
       for (const s of sections) {
         if (tk !== A._rt) return;                        // 已有更新的 render 在跑：本次作废
-        if (!s.list.length && !s.id) continue;           // 空的「未分组」不显示
+        if (!s.list.length && !s.id && !hasGroups) continue;   // 纯空工程才不显示空的「未分组」
         any = true;
         box.appendChild(A.groupHead(s, s.list.length));
         if (A.collapsed.has(s.id)) continue;
@@ -110,6 +112,13 @@
       btn.title = n
         ? '移除选中的 ' + n + ' 项：条目与引用它们的片段会被删除，工程内副本移入回收站'
         : '先点选素材（Ctrl / Shift 可多选）';
+      /* 选中时把底部提示换成"怎么删"（用户反馈：批量选中后不知按什么删） */
+      const hint = document.getElementById('asset-hint');
+      if (hint) {
+        hint.textContent = n
+          ? '已选中 ' + n + ' 项 · 按 Delete 或点「删除选中」移除（Esc 取消选择）'
+          : '拖素材到下方时间轴 · 双击图片作参考';
+      }
     },
     paintSelection() {
       document.querySelectorAll('#asset-list .asset-item').forEach(el => {
@@ -225,8 +234,9 @@
       const nm = document.createElement('span');
       nm.className = 'g-name';
       nm.textContent = s.name;
-      nm.title = '双击重命名';
+      if (s.id) nm.title = '双击重命名';      // 低项：未分组不可重命名，别给误导提示
       nm.ondblclick = (ev) => {
+        if (!s.id) return;                    // 未分组没有名字可改
         /* 提交路径：回车/失焦直接 commit（done 防重入）、Escape 真取消、值未变不脏标记。
            IME（中文输入法）要点：用户按的回车往往是「上屏候选」而不是「确认输入」——
            组合中的 keydown 会带 isComposing/keyCode 229，此刻 input.value 还是上屏前的
@@ -445,7 +455,12 @@
         const blob = await MTG.storage.readBlob(asset.path);
         if (blob) { try { await MTG.audio.load(asset.id, blob); } catch (e) { console.warn('[assets] 音频解码失败', asset.name, e); } }
       }
-      const track = p.tracks.find(t => t.kind === 'audio') || p.tracks[0];
+      /* 低项：没有音频轨时此前落到分镜轨（片段再也拖不回来）—— 自动建一条音频轨 */
+      let track = p.tracks.find(t => t.kind === 'audio');
+      if (!track) {
+        track = { id: U.uid('tr'), name: '音频 A' + (p.tracks.length + 1), kind: 'audio', h: 62, muted: false };
+        p.tracks.push(track);
+      }
       let dur = MTG.audio.durationOf(asset.id) || 5;
       const start = Math.max(0, MTG.state.playhead);
       const moved = MTG.timeline.makeRoom(track.id, start, dur);   // 同轨不重叠
@@ -468,7 +483,8 @@
       for (const f of Array.from(fileList)) {
         const kind = U.kindOf(f.name);
         if (kind === 'other') { MTG.toast('跳过不支持的文件：' + f.name, true); continue; }
-        const path = 'assets/' + kind + '/' + f.name;
+        /* 低项：落盘文件名净化，与主进程导入（projectStore.importAssets）同一规则 */
+        const path = 'assets/' + kind + '/' + U.safeFileName(f.name);
         await MTG.storage.writeFile(path, f);
         const exist = p.assets.find(a => a.path === path);
         if (exist) {

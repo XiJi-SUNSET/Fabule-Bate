@@ -79,17 +79,30 @@
       if (P.dragging === 'ring') {
         let deg = Math.atan2(p.y - g.cy, p.x - g.cx) * 180 / Math.PI;
         st.hsv.h = Math.round(((deg + 90) % 360 + 360) % 360);
-        P.drawTriangle();
+        /* M-9：色相环拖动每帧都要重画全量三角（逐像素 190²）—— rAF 合帧，
+           一帧内多次 pointermove 只重绘一次；三角拖动路径本身轻（一次 paint） */
+        P.drawSoon();
       } else {
         const w = bary(p, P.verts);
         const V = U.clamp(1 - w.c, 0, 1);              // c = 黑顶点权重
         const S = V > 0 ? U.clamp(w.b / V, 0, 1) : 0;  // b = 纯色顶点权重
         st.hsv.s = Math.round(S * 100);
         st.hsv.v = Math.round(V * 100);
+        st.color = U.hsv2hex(st.hsv.h, st.hsv.s, st.hsv.v);
+        P.paint();
       }
       st.color = U.hsv2hex(st.hsv.h, st.hsv.s, st.hsv.v);
-      P.paint();
       P.onChange && P.onChange(st.color);
+    },
+
+    /* 三角重绘 + 合成：rAF 合帧版（M-9） */
+    drawSoon() {
+      if (P._rafDraw) return;
+      P._rafDraw = requestAnimationFrame(() => {
+        P._rafDraw = 0;
+        P.drawTriangle();
+        P.paint();
+      });
     },
 
     /* ── 绘制 ── */
@@ -185,11 +198,13 @@
       ctx.putImageData(img, 0, 0);
     },
 
-    /* 外部设置颜色 */
-    set(hex) {
+    /* 外部设置颜色。
+       keepHsv=true：调用方（h/s/v 数字框）刚设过 hsv，别再 hex→hsv 反解 ——
+       往返取整会让游标 ±1 抖动（M-9） */
+    set(hex, keepHsv) {
       const st = MTG.state;
       st.color = hex;
-      st.hsv = U.hex2hsv(hex);
+      if (!keepHsv) st.hsv = U.hex2hsv(hex);
       P.drawTriangle();
       P.paint();
     },

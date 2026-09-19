@@ -189,6 +189,7 @@ input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border: 0; bo
 .save-state[data-st="saving"] { color: var(--text-dim); }
 .save-state[data-st="failed"] { color: var(--red); }
 .btn.armed { color: #fff; background: var(--red); border-color: transparent; }
+.th-btn.armed { color: #fff; background: var(--red); }
 .btn.icon { padding: 4px 8px; min-width: 28px; text-align: center; }
 .btn.play { color: #fff; background: rgba(var(--red-rgb), 0.9); border-color: transparent; }
 .btn.play.on { background: var(--blue); }

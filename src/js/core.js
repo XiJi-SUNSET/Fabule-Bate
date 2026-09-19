@@ -23,6 +23,19 @@
       if (MTG.IMAGE_EXT.includes(e)) return 'image';
       return 'other';
     },
+    /* 素材落盘文件名净化：与主进程导入（projectStore.importAssets）同一规则 ——
+       低项：此前浏览器路径不净化，非法字符会进文件路径。
+       边缘防护：扩展名只留字母数字（点也去）、主干去首点（防 ".." 前缀）、去尾点空格 */
+    safeFileName(name) {
+      const s = String(name || '');
+      const dot = s.lastIndexOf('.');
+      const base = dot > 0 ? s.slice(0, dot) : s;
+      const ext = dot > 0 ? s.slice(dot + 1).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 6) : '';
+      let clean = base.replace(/[^A-Za-z0-9._\u4e00-\u9fa5-]/g, '_').slice(0, 80);
+      clean = clean.replace(/^\.+/, '_').replace(/[. ]+$/, '');
+      if (!clean) clean = 'asset';
+      return clean + (ext ? '.' + ext : '');
+    },
     /* 秒 → 00:00.00 */
     tc(t) {
       t = Math.max(0, t || 0);

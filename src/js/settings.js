@@ -255,6 +255,8 @@
             });
             if (!n) throw new Error('没有可用的笔刷');
             if (MTG.board.bp) MTG.board.bp = MTG.brushes.loadParams(MTG.board.brushId);
+            /* 低项：参数面板有"同工具不重建"缓存 —— 导入的预设值必须强制刷新 */
+            if (MTG.ui && MTG.ui.invalidateBrushParams) MTG.ui.invalidateBrushParams();
             if (MTG.ui && MTG.ui.syncBrushSliders) MTG.ui.syncBrushSliders();
             S.ui.render();
             MTG.toast('已导入 ' + n + ' 支笔刷的参数');

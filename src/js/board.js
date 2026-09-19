@@ -88,6 +88,10 @@
       B._spaceHeld = !!v;
       const e = E();
       if (e && e.setPanMode) e.setPanMode(!!v);
+      /* 低项：`.board-stage.panning` 的光标规则此前是死 CSS（全库无人加类）——
+         空格平移期间加上，抓手中光标可见 */
+      const st = document.getElementById('stage');
+      if (st) st.classList.toggle('panning', !!v);
     },
 
     get showRef() { return !!B._showRef; },

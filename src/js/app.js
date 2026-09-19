@@ -8,6 +8,10 @@
 
   /* ══════════ 全局渲染 ══════════ */
   MTG.render = function () {
+    /* M-1：render 后时间码必须与播放头一致 —— 此前只有 setPlayhead 会写 #timecode，
+       打开工程/外部同步是直接改 playhead 再 render 的，时间码停在旧值 */
+    const tcEl = document.getElementById('timecode');
+    if (tcEl) tcEl.textContent = U.tc(MTG.state.playhead || 0);
     MTG.timeline.render();
     MTG.assets.render();
     MTG.ui.syncBoardMeta();
@@ -69,7 +73,11 @@
       MTG.state.color = hex;
       $('swatch').style.background = hex;
       const hsv = MTG.state.hsv;
-      $('f-h').value = hsv.h; $('f-s').value = hsv.s; $('f-v').value = hsv.v;
+      /* M-7：聚焦中的输入框不回写 —— 否则打字中途被 clamp 覆盖、光标跳位 */
+      const fh = $('f-h'), fs = $('f-s'), fv = $('f-v');
+      if (document.activeElement !== fh) fh.value = hsv.h;
+      if (document.activeElement !== fs) fs.value = hsv.s;
+      if (document.activeElement !== fv) fv.value = hsv.v;
       if (document.activeElement !== $('f-hex')) $('f-hex').value = hex;
       /* 推给绘画引擎：拾色器 / 数字字段 / 色板改色必须真正落到画笔。
          判重防回声：引擎 setColor → onColor → syncColor 时颜色已相同，不再回推。 */
@@ -270,6 +278,11 @@
       });
       if (moreCount) box.appendChild(more);
     },
+    /* 低项：导入笔刷预设后强制重建参数面板（"同工具不重建"的缓存会继续显示旧值） */
+    invalidateBrushParams() {
+      MTG.ui._propsTool = null;
+      MTG.ui.buildBrushParams();
+    },
     syncBrushSliders() {
       const bp = MTG.board.bp;
       if (!bp) return;
@@ -304,6 +317,12 @@
         MTG.toast('绘画窗口开着，先「存帧并关闭」再切换视图', true);
         return;
       }
+      /* 低项：视图切换后恢复各自的滚动位置（此前切走再回来滚动归零） */
+      const SCROLL_SEL = { sheet: '.sheet-scroll', story: '.story-scroll' };
+      MTG.ui._viewScroll = MTG.ui._viewScroll || {};
+      const prevV = MTG.ui._viewName || 'timeline';
+      const prevEl = SCROLL_SEL[prevV] ? document.querySelector(SCROLL_SEL[prevV]) : null;
+      if (prevEl) MTG.ui._viewScroll[prevV] = prevEl.scrollTop;
       document.getElementById('view-timeline').classList.toggle('hidden', v !== 'timeline');
       document.getElementById('view-sheet').classList.toggle('hidden', v !== 'sheet');
       document.getElementById('view-story').classList.toggle('hidden', v !== 'story');
@@ -314,6 +333,13 @@
       else MTG.timeline.render();
       const grp = document.getElementById('view-switch');
       if (grp) grp.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+      /* 低项（承上）：恢复目标视图上次的滚动位置 */
+      const nextEl = SCROLL_SEL[v] ? document.querySelector(SCROLL_SEL[v]) : null;
+      if (nextEl && MTG.ui._viewScroll[v]) {
+        const st = MTG.ui._viewScroll[v];
+        requestAnimationFrame(() => { try { nextEl.scrollTop = st; } catch (_) {} });
+      }
+      MTG.ui._viewName = v;
       /* 画板从隐藏切回：引擎的画布尺寸取自 clientWidth，隐藏期间没法量。
          回到时间轴视图时补一次尺寸重建；画布此前从未量过（首个显示帧）才顺带适配窗口。 */
       if (v === 'timeline') {
@@ -335,6 +361,17 @@
      守卫必须下沉到动作分发层（settings.run）——键盘、轮盘菜单、任何直调都从同一个
      闸门过；此前只有键盘路径被拦，轮盘能从侧门把"写错帧"放回来。 */
   const PM_BLOCK = new Set(['cmd.play', 'cmd.prev', 'cmd.next', 'cmd.home', 'cmd.newFrame', 'cmd.saveFrame']);
+
+  /* 最近一次指针落点所在的区域（素材库 / 画板）。
+     Delete 的归属跟随"用户最后碰的东西"：素材库有选中 + 刚在素材库操作 → 删素材；
+     否则画板有选区 → 删选区内容（避免"素材库选中 + 画板残留掩膜"时打错目标）。 */
+  let lastFocusArea = '';
+  document.addEventListener('pointerdown', e => {
+    const t = e.target;
+    if (!t || !t.closest) return;
+    if (t.closest('#panel-assets')) lastFocusArea = 'assets';
+    else if (t.closest('#stage')) lastFocusArea = 'board';
+  }, true);
 
   /* ══════════ 工程打开 / 保存 ══════════ */
   /* 切工程与外部同步互斥（N-A6）：切工程在多个 await 之间若到达广播，
@@ -585,8 +622,10 @@
     $('btn-add-audio-track').onclick = () => MTG.timeline.addTrack('audio');
     $('btn-add-board-track').onclick = () => MTG.timeline.addTrack('board');
     $('btn-fix-overlap').onclick = () => {
-      const n = MTG.timeline.fixOverlaps();
-      MTG.toast(n ? '已顺推整理 ' + n + ' 处重叠' : '没有重叠片段');
+      const r = MTG.timeline.fixOverlaps();
+      MTG.toast(r.moved
+        ? '已整理 ' + r.moved + ' 处重叠（涉及 ' + r.involved + ' 个片段）'
+        : '没有重叠片段');
     };
 
     /* 素材库 */
@@ -664,8 +703,11 @@
     $('btn-save-board').onclick = () => MTG.board.saveFrame();
     $('sel-fill').onclick = () => MTG.board.fillSel();
     $('sel-del').onclick = () => MTG.board.deleteSel();
-    $('sel-commit').onclick = () => { MTG.board.commitSel(); MTG.toast('已把选区内容落回画面'); };
-    $('sel-cancel').onclick = () => { MTG.board.commitSel(); MTG.toast('已取消选区'); };
+    /* M-8：这两个按钮此前同效（都 deselect），而 title 暗示存在"浮动内容可回滚"。
+       选区模型的移动是直接改像素、没有浮动层 —— 文案与行为对齐：
+       两者都结束选区编辑，内容保留在画面上。 */
+    $('sel-commit').onclick = () => { MTG.board.commitSel(); MTG.toast('已结束选区编辑（内容保留在画面上）'); };
+    $('sel-cancel').onclick = () => { MTG.board.commitSel(); MTG.toast('已取消选区（画面内容保留）'); };
     $('btn-clear-board').onclick = () => {
       MTG.board.clearLayer(MTG.state.layer, true);
       MTG.toast('已清空当前层');
@@ -742,6 +784,12 @@
       applySize(+parts[0], +parts[1]);
     };
     $('size-apply').onclick = () => applySize(+$('size-w').value, +$('size-h').value);
+    /* 低项：宽/高输入框按 Enter 直接应用（此前只有点按钮） */
+    ['size-w', 'size-h'].forEach(id => {
+      $(id).addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); $('size-apply').click(); }
+      });
+    });
 
     /* 画布导航 */
     $('z-in').onclick = () => MTG.board.zoomCenter(1.25);
@@ -756,17 +804,26 @@
       const v = U.clamp(+$('f-v').value || 0, 0, 100);
       MTG.state.hsv = { h, s, v };
       const hex = U.hsv2hex(h, s, v);
-      MTG.picker.set(hex);
+      MTG.picker.set(hex, true);              // M-9：hsv 是刚输入的，别再用 hex 反解覆盖（游标 ±1 抖动）
       MTG.ui.syncColor(hex);
     };
     ['f-h', 'f-s', 'f-v'].forEach(id => { $(id).oninput = onField; });
     $('f-hex').onchange = () => {
       let v = $('f-hex').value.trim();
-      if (!/^#?[0-9a-fA-F]{6}$/.test(v)) { MTG.toast('HEX 格式不对，例：#eb684b', true); return; }
+      if (!/^#?[0-9a-fA-F]{6}$/.test(v)) {
+        MTG.toast('HEX 格式不对，例：#eb684b（已还原）', true);
+        $('f-hex').value = MTG.state.color;   // M-6：不留垃圾文本，界面颜色与画笔始终一致
+        return;
+      }
       if (!v.startsWith('#')) v = '#' + v;
       MTG.picker.set(v);
       MTG.ui.syncColor(v);
     };
+    /* M-6：Enter 提交 / Esc 还原（此前是 blur-only，Enter 无反应） */
+    $('f-hex').addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); $('f-hex').blur(); }
+      else if (e.key === 'Escape') { $('f-hex').value = MTG.state.color; $('f-hex').blur(); }
+    });
 
     $('btn-theme').onclick = () => {
       const next = document.body.dataset.theme === 'dark' ? 'light' : 'dark';
@@ -775,26 +832,30 @@
       MTG.timeline.render();
     };
 
-    /* 分割条 */
+    /* 分割条（M-13：拖动结束持久化；双击复位） */
     dragSplitter($('split-v'), dx => {
       const w = U.clamp(parseInt(getComputedStyle(document.documentElement).getPropertyValue('--assets-w')) + dx, 180, 520);
       document.documentElement.style.setProperty('--assets-w', w + 'px');
-    }, true);
+    }, true, saveSplits);
     /* 右侧两列也能拖宽度：工具列 / 镜头信息列
        注意方向：分割条往右拖 = 左侧变宽、右侧列变窄，所以两边都是「原宽 − dx」 */
     dragSplitter($('split-side'), dx => {
       const el = $('side-tools');
       if (el) el.style.width = U.clamp(el.getBoundingClientRect().width - dx, 190, 460) + 'px';
-    }, true);
+    }, true, saveSplits);
     dragSplitter($('split-shot'), dx => {
       const el = document.querySelector('.board-side.side-shot');
       if (el) el.style.width = U.clamp(el.getBoundingClientRect().width - dx, 190, 460) + 'px';
-    }, true);
+    }, true, saveSplits);
     dragSplitter($('split-h'), dy => {
       const h = U.clamp(parseInt(getComputedStyle(document.documentElement).getPropertyValue('--tl-h')) - dy, 140, 560);
       document.documentElement.style.setProperty('--tl-h', h + 'px');
       MTG.timeline.render();
-    }, false);
+    }, false, saveSplits);
+    ['split-v', 'split-side', 'split-shot', 'split-h'].forEach(id => {
+      const el = $(id);
+      if (el) el.addEventListener('dblclick', resetSplits);
+    });
 
     /* 设置面板 */
     $('btn-settings').onclick = () => MTG.settings.open();
@@ -821,11 +882,18 @@
       'cmd.prev': () => stepShot(-1),
       'cmd.next': () => stepShot(1),
       'cmd.del': () => {
-        if (MTG.board.sel) { MTG.board.deleteSel(); return; }   // 画板有选区 → 删选区内容
-        /* R5-15（S-7 旁路）：视图感知 —— 分镜表里 Delete 必须走"删镜头"的
-           确认 + 完整清理链（否则照样攒出删不掉的孤儿帧）；时间轴里仍只删片段
-           （素材保留，可重新拖上来） */
-        if (MTG.sheet && MTG.sheet.active) { MTG.sheet.delShot(); return; }
+        /* 视图感知的删除语义（稳定、不随"残留掩膜"漂移）：
+           · 分镜表 / 故事板：Delete = 删镜头（二次确认 + 完整清理链）
+           · 素材库有选中（且最近交互在素材库，或画板没有选区）：删素材（含确认）
+           · 画板有选区：删选区内容
+           · 其余：删选中片段（素材保留，可重新拖上来） */
+        const sheetView = !!(MTG.sheet && MTG.sheet.active);
+        const storyView = !!(MTG.story && MTG.story.active);
+        if (sheetView || storyView) { MTG.sheet.delShot(); return; }
+        const hasAssetSel = !!(MTG.assets && MTG.assets.selected && MTG.assets.selected.size);
+        if (hasAssetSel && (lastFocusArea === 'assets' || !MTG.board.sel)) { MTG.assets.removeSelected(); return; }
+        if (MTG.board.sel) { MTG.board.deleteSel(); return; }
+        if (hasAssetSel) { MTG.assets.removeSelected(); return; }
         MTG.timeline.deleteSelected();
       },
       'cmd.fit': () => MTG.board.fitView(),
@@ -847,7 +915,8 @@
       'cmd.brushDown': () => stepBrush(-1),
       'cmd.radial': () => MTG.radial.show()
     };
-    ['brush', 'eraser', 'line', 'rect', 'eyedrop', 'hand', 'zoom', 'lasso', 'smudge', 'blur', 'warp'].forEach(t => {
+    /* 'fill'：油漆桶此前在 UI 与动作表里都不可达（低项）——引擎已实现，补入口 */
+    ['brush', 'eraser', 'line', 'rect', 'eyedrop', 'hand', 'zoom', 'lasso', 'fill', 'smudge', 'blur', 'warp'].forEach(t => {
       acts['tool.' + t] = () => setTool(t);
     });
     (MTG.brushes ? MTG.brushes.list : []).forEach(b => {
@@ -883,6 +952,10 @@
         } else {
           const det = document.getElementById('story-detail');
           if (det && !det.classList.contains('hidden')) { e.preventDefault(); det.classList.add('hidden'); return; }
+          /* 素材库有选中：Esc 清空选择（与"点空白处清空"一致） */
+          if (MTG.assets && MTG.assets.selected && MTG.assets.selected.size) {
+            e.preventDefault(); MTG.assets.clearSelection(); return;
+          }
         }
       }
 
@@ -908,7 +981,7 @@
       }
       if (MTG.board.sel && (e.key === 'Enter' || e.key === 'Escape')) {   // 选区固定键：不参与自定义
         MTG.board.commitSel();
-        MTG.toast(e.key === 'Enter' ? '已把选区内容落回画面' : '已取消选区');
+        MTG.toast(e.key === 'Enter' ? '已结束选区编辑（内容保留在画面上）' : '已取消选区（画面内容保留）');
         return;
       }
 
@@ -1128,7 +1201,7 @@
     if (!st.currentBoardId) return;
     const cur = MTG.board.bp ? MTG.board.bp.size : st.brush.size;
     const step = cur < 10 ? 1 : cur < 40 ? 2 : cur < 100 ? 5 : 10;
-    const next = U.clamp(Math.round(cur + dir * step), 1, 200);
+    const next = U.clamp(Math.round(cur + dir * step), 1, 400);   // 低项：对齐引擎上限 400
     if (next === cur) return;
     st.brush.size = next;
     if (MTG.board.bp) {
@@ -1196,7 +1269,7 @@
   }
 
   /* 分割条拖动：horizontal=true 时取 dx */
-  function dragSplitter(el, fn, horizontal) {
+  function dragSplitter(el, fn, horizontal, onEnd) {
     let last = 0, on = false;
     el.addEventListener('pointerdown', e => {
       on = true; last = horizontal ? e.clientX : e.clientY;
@@ -1212,10 +1285,58 @@
     const up = e => {
       on = false; el.classList.remove('dragging');
       try { el.releasePointerCapture(e.pointerId); } catch (err) {}
+      if (onEnd) { try { onEnd(); } catch (_) {} }     // M-13：拖动结束落盘布局
     };
     el.addEventListener('pointerup', up);
     el.addEventListener('pointercancel', up);
   }
+
+  /* ── 布局分割条：尺寸持久化 + 双击复位（M-13）──
+     此前拖完即忘：重启回默认、调过头只能手动拖回来。 */
+  const SPLIT_KEY = 'montage.splits';
+  function readSplits() {
+    try { return JSON.parse(localStorage.getItem(SPLIT_KEY)) || {}; } catch (_) { return {}; }
+  }
+  function applySplits() {
+    const s = readSplits();
+    const root = document.documentElement;
+    if (s.assetsW) root.style.setProperty('--assets-w', U.clamp(Math.round(s.assetsW), 180, 520) + 'px');
+    if (s.tlH) root.style.setProperty('--tl-h', U.clamp(Math.round(s.tlH), 140, 560) + 'px');
+    const st = document.getElementById('side-tools');
+    if (st && s.sideW) st.style.width = U.clamp(Math.round(s.sideW), 190, 460) + 'px';
+    const ss = document.querySelector('.board-side.side-shot');
+    if (ss && s.shotW) ss.style.width = U.clamp(Math.round(s.shotW), 190, 460) + 'px';
+  }
+  function saveSplits() {
+    try {
+      const root = getComputedStyle(document.documentElement);
+      const st = document.getElementById('side-tools');
+      const ss = document.querySelector('.board-side.side-shot');
+      localStorage.setItem(SPLIT_KEY, JSON.stringify({
+        assetsW: parseInt(root.getPropertyValue('--assets-w'), 10) || undefined,
+        tlH: parseInt(root.getPropertyValue('--tl-h'), 10) || undefined,
+        sideW: st ? Math.round(st.getBoundingClientRect().width) : undefined,
+        shotW: ss ? Math.round(ss.getBoundingClientRect().width) : undefined,
+      }));
+    } catch (_) {}
+  }
+  function resetSplits() {
+    try { localStorage.removeItem(SPLIT_KEY); } catch (_) {}
+    const root = document.documentElement;
+    root.style.removeProperty('--assets-w');
+    root.style.removeProperty('--tl-h');
+    const st = document.getElementById('side-tools');
+    if (st) st.style.width = '';
+    const ss = document.querySelector('.board-side.side-shot');
+    if (ss) ss.style.width = '';
+    window.dispatchEvent(new Event('resize'));
+    if (MTG.timeline && MTG.timeline.render) MTG.timeline.render();
+    MTG.toast('布局已复位（双击分割条）');
+  }
+  /* 暴露给自检/诊断（boot 里也会用 applySplits 恢复布局） */
+  MTG.ui.applySplits = applySplits;
+  MTG.ui.saveSplits = saveSplits;
+  MTG.ui.resetSplits = resetSplits;
 
   /* ══════════ 启动 ══════════ */
   async function boot() {
@@ -1263,6 +1384,9 @@
         if (pane && pane.checked !== on) pane.checked = on;
       }
     });
+
+    applySplits();                 // M-13：恢复上次拖出来的布局（分割条持久化）
+    MTG.ui.syncRef();              // 低项：#ref-show 初始勾选态与 board.showRef 一致
 
     // 不再自动建工程：像 PR 一样，先打开（或新建）工程文件夹
     MTG.state.project = null;
