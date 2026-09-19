@@ -663,6 +663,9 @@ textarea.sp-ctl { min-height: 34px; resize: vertical; line-height: 1.45; }
   border: 1px solid rgba(var(--red-rgb), 0.5); border-radius: 4px; padding: 1px 4px;
 }
 .g-count { font-size: 10px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.g-rename-btn { opacity: 0; background: none; border: 0; color: var(--text-dim); cursor: pointer; font-size: 11px; padding: 0 2px; }
+.group-head:hover .g-rename-btn { opacity: 1; }
+.g-rename-btn:hover { color: var(--red); }
 .g-x { opacity: 0; background: none; border: 0; color: var(--text-dim); cursor: pointer; font-size: 11px; padding: 0 2px; }
 .group-head:hover .g-x { opacity: 1; }
 .g-x:hover { color: var(--red); }

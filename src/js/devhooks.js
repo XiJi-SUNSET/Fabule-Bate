@@ -787,10 +787,12 @@
       return JSON.stringify(out);
     },
 
-    /* 分组重命名探针：dblclick 分组名 → 输入框出现？→ 提交（含中文输入法路径）→ 模型写回？
-       场景 A：直接输入 + 回车（非组合）；
-       场景 B：输入法组合中按回车（isComposing）不得把上屏前的旧值写回；
-               组合结束（compositionend）后自动提交上屏后的新值。 */
+    /* 分组重命名探针（复刻用户实测失败路径 + 本轮加固点）：
+       A. ✎ 显式按钮进入编辑 → 普通回车提交（最可靠入口）；
+       B. 双击组头任意处（target 落在计数上，不是 .g-name）→ 也应进入编辑；Escape 真取消；
+       C. IME：组合中回车不得提交（上屏前旧值）；compositionend 时 value 尚未落定（仍是旧值）
+          → 实现延迟一拍再读 value，应提交上屏后的新名；
+       D. 编辑中外部 MTG.assets.render() 打断 → 输入框与草稿应自动恢复，回车仍能提交。 */
     async groupRenameProbe() {
       const out = {};
       const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -810,71 +812,180 @@
           p.assets[0].group = 'g-probe';
         }
         await MTG.assets.render();
-        const nm = document.querySelector('.group-head[data-gid="g-probe"] .g-name');
-        if (!nm) { out.error = '找不到分组名元素（render 没产出该分组？）'; return JSON.stringify(out); }
+        const findHead = () => {
+          for (const h of document.querySelectorAll('#asset-list .group-head')) {
+            if (h.dataset.gid === 'g-probe') return h;
+          }
+          return null;
+        };
+        const findNm = () => { const h = findHead(); return h && h.querySelector('.g-name'); };
+        const nameOf = () => { const g = MTG.state.project.groups.find(x => x.id === 'g-probe'); return g && g.name; };
+        if (!findHead()) { out.error = '找不到分组头（render 没产出该分组？）'; return JSON.stringify(out); }
         out.found = true;
 
-        /* —— 场景 A：直接输入 —— */
-        nm.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-        await sleep(80);
-        const input = nm.querySelector('.g-rename');
-        out.inputAppeared = !!input;
-        if (input) {
-          input.value = '新组名';
-          /* 真实回车路径：onkeydown → commit（done 防重入） */
-          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-          await sleep(120);
-          const g = p.groups.find(x => x.id === 'g-probe');
-          out.nameAfterA = g && g.name;
-          out.renamedA = !!(g && g.name === '新组名');
-          const nmA = document.querySelector('.group-head[data-gid="g-probe"] .g-name');
-          out.domAfterA = nmA && nmA.textContent;
-        }
-
-        /* —— 场景 B：中文输入法（组合中回车=上屏，不能提交旧值） —— */
-        const nm2 = document.querySelector('.group-head[data-gid="g-probe"] .g-name');
-        if (nm2) {
-          nm2.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-          await sleep(80);
-          const input2 = nm2.querySelector('.g-rename');
-          out.inputAppearedB = !!input2;
-          if (input2) {
-            const diag = {};
-            input2.addEventListener('compositionstart', () => { diag.gotStart = true; });
-            input2.addEventListener('compositionend', () => { diag.gotEnd = true; });
-            input2.addEventListener('keydown', (ev) => {
-              diag.kdIsComposing = ev.isComposing; diag.kdKey = ev.key; diag.kdKeyCode = ev.keyCode;
-            });
-            input2.value = out.nameAfterA;         // 上屏前：value 仍是旧名
-            input2.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
-            input2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }));
-            await sleep(40);
-            const g1 = p.groups.find(x => x.id === 'g-probe');
-            out.imeGuard = !!(g1 && g1.name === out.nameAfterA);   // 组合中按回车不得提交
-            input2.value = '输入法名';             // 浏览器在 compositionend 时同步上屏文本
-            input2.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '输入法名' }));
-            diag.valueAtEnd = input2.value;
-            diag.stillInDom = (nm2.querySelector('.g-rename') === input2);
-            await sleep(200);
-            const g2 = p.groups.find(x => x.id === 'g-probe');
-            out.nameAfterB = g2 && g2.name;
-            out.renamedB = !!(g2 && g2.name === '输入法名');
-            const nmB = document.querySelector('.group-head[data-gid="g-probe"] .g-name');
-            out.domAfterB = nmB && nmB.textContent;
-            /* 逃生验证：非组合的普通回车必须能提交（验证 handler 链路本身没断） */
-            if (!out.renamedB) {
-              const input3 = nmB && nmB.querySelector('.g-rename');
-              if (input3) {
-                input3.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-                await sleep(150);
-                const g3 = p.groups.find(x => x.id === 'g-probe');
-                out.escapeCommit = !!(g3 && g3.name === '输入法名');
-              } else out.escapeCommit = 'no-input';
+        /* —— A：✎ 按钮 → 普通回车 —— */
+        {
+          const btn = findHead().querySelector('.g-rename-btn');
+          out.hasBtn = !!btn;
+          if (btn) {
+            btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+            await sleep(60);
+            const input = findNm() && findNm().querySelector('.g-rename');
+            out.inputA = !!input;
+            if (input) {
+              input.value = '按钮改名';
+              input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+              await sleep(140);
+              out.nameA = nameOf();
+              out.okA = out.nameA === '按钮改名';
             }
-            out.bDiag = diag;
           }
         }
+
+        /* —— B：双击组头（落在计数上）→ 进入编辑；Escape 取消 —— */
+        {
+          const cnt = findHead() && findHead().querySelector('.g-count');
+          out.hasCount = !!cnt;
+          if (cnt) {
+            cnt.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+            await sleep(60);
+            const input = findNm() && findNm().querySelector('.g-rename');
+            out.inputB = !!input;
+            if (input) {
+              input.value = '不应写回';
+              input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+              await sleep(140);
+              out.nameB = nameOf();
+              out.okB = out.nameB === '按钮改名';      // 取消后保持上一场景的名字
+            }
+          }
+        }
+
+        /* —— C：IME 上屏回车 + compositionend 时 value 未落定的时序 —— */
+        {
+          const nm = findNm();
+          if (nm) {
+            nm.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+            await sleep(60);
+            const input = nm.querySelector('.g-rename') || (findNm() && findNm().querySelector('.g-rename'));
+            out.inputC = !!input;
+            if (input) {
+              input.value = nameOf();                // 组合开始：value 仍是旧名
+              input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+              input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }));
+              await sleep(40);
+              out.imeGuard = nameOf() === '按钮改名'; // 组合中按回车不得提交
+              /* 关键：compositionend 派发时 value 尚未被 IME 落文本（部分输入法如此） */
+              input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '输入法名' }));
+              out.valueAtEndC = input.value;          // 此刻仍是旧名
+              input.value = '输入法名';                // 下一拍才落进 value
+              await sleep(180);
+              out.nameC = nameOf();
+              out.okC = out.nameC === '输入法名';      // 延迟提交应读到上屏后的新值
+            }
+          }
+        }
+
+        /* —— D：编辑中外部重渲染打断 → 草稿恢复 + 回车提交 —— */
+        {
+          const nm = findNm();
+          if (nm) {
+            nm.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+            await sleep(60);
+            const input = nm.querySelector('.g-rename') || (findNm() && findNm().querySelector('.g-rename'));
+            out.inputD = !!input;
+            if (input) {
+              input.value = '草稿名';
+              input.dispatchEvent(new Event('input', { bubbles: true }));   // 记录草稿
+              await MTG.assets.render();                                     // 外部整体重渲染
+              await sleep(120);                                              // 等 render 尾部的编辑恢复
+              const nm2 = findNm();
+              const input2 = nm2 && nm2.querySelector('.g-rename');
+              out.restoredD = !!input2;
+              out.draftKeptD = !!(input2 && input2.value === '草稿名');
+              if (input2) {
+                input2.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+                await sleep(180);
+                out.nameD = nameOf();
+                out.okD = out.nameD === '草稿名';
+              } else {
+                out.dInputNow = !!document.querySelector('#asset-list .g-rename');
+              }
+            }
+          }
+        }
+        out.ok = !!(out.okA && out.okB && out.imeGuard && out.okC && out.okD);
       } catch (e) { out.error = (e && e.message) || String(e); }
+      return JSON.stringify(out);
+    },
+
+    /* 时间轴编辑 → 预览同步探针（用户反馈："移动音频/分镜后必须点一下时间轴才刷新"）：
+       1) 播放头落在分镜片段内 → 画板应切到该帧；
+       2) 拖动片段离开播放头 → 拖动中与松手后画板都应卸载（不再挂旧帧）；
+       3) 拖回播放头下 → 画板应切回该帧。 */
+    async timelinePreviewProbe(dirUrl) {
+      const out = {};
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const bak = {
+        project: MTG.state.project, board: MTG.state.currentBoardId,
+        mode: MTG.storage.mode, dir: MTG.storage.dirName, playhead: MTG.state.playhead
+      };
+      try {
+        if (!window.fabula) throw new Error('非 Electron 环境：window.fabula 不存在');
+        if (!dirUrl) throw new Error('缺少探针目录');
+        try { await window.fabula.project.create(dirUrl, '预览探针'); } catch (_) {}
+        MTG.storage.mode = 'electron';
+        MTG.storage.dirName = String(dirUrl).split('/').filter(Boolean).pop() || 'probe';
+        const p = MTG.state.project = MTG.newProject('预览探针');
+        MTG.migrateProject(p);
+        p.boards = [{ id: 'bd-pv', name: '帧P', path: 'boards/bd-pv.png', group: null }];
+        const c = document.createElement('canvas'); c.width = 32; c.height = 18;
+        const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+        await MTG.storage.writeFile('boards/bd-pv.png', blob);
+        let tr = p.tracks.find(t => t.kind === 'board');
+        if (!tr) { tr = { id: 'tr-pv', name: '分镜', kind: 'board', h: 90, muted: false }; p.tracks.push(tr); }
+        p.clips = [{ id: 'cl-pv', trackId: tr.id, kind: 'board', boardId: 'bd-pv', name: '帧P', start: 0, dur: 3, offset: 0 }];
+        MTG.render();
+        await sleep(200);
+        MTG.setPlayhead(1);
+        await sleep(400);
+        out.before = MTG.state.currentBoardId;            // 期望 bd-pv
+        const el = document.querySelector('.clip[data-id="cl-pv"]');
+        if (!el) { out.error = '找不到片段元素'; return JSON.stringify(out); }
+        const r = el.getBoundingClientRect();
+        const cx = r.left + 20, cy = r.top + r.height / 2;
+        const mk = (t, x, y, b) => new PointerEvent(t, {
+          clientX: x, clientY: y, pointerId: 21, pointerType: 'mouse', isPrimary: true,
+          button: 0, buttons: b, bubbles: true, cancelable: true
+        });
+        el.dispatchEvent(mk('pointerdown', cx, cy, 1));
+        el.dispatchEvent(mk('pointermove', cx + MTG.state.pxPerSec * 5, cy, 1));
+        await sleep(140);
+        out.duringFollowed = MTG.state.currentBoardId === null;       // 拖动中已跟随（跨过边界即卸载）
+        el.dispatchEvent(mk('pointerup', cx + MTG.state.pxPerSec * 5, cy, 0));
+        await sleep(320);
+        out.away = (MTG.state.currentBoardId === null && !MTG.board.clipAtPlayhead());
+        const el2 = document.querySelector('.clip[data-id="cl-pv"]');
+        const r2 = el2.getBoundingClientRect();
+        const cx2 = r2.left + 20;
+        el2.dispatchEvent(mk('pointerdown', cx2, cy, 1));
+        el2.dispatchEvent(mk('pointermove', cx2 - MTG.state.pxPerSec * 5, cy, 1));
+        el2.dispatchEvent(mk('pointerup', cx2 - MTG.state.pxPerSec * 5, cy, 0));
+        await sleep(400);
+        out.back = (MTG.state.currentBoardId === 'bd-pv');            // 拖回：画板切回该帧
+        out.ok = !!(out.before === 'bd-pv' && out.duringFollowed && out.away && out.back);
+      } catch (e) { out.error = (e && e.message) || String(e); }
+      finally {
+        /* 探针不泄漏全局状态（R5 审计教训）：还原工程/画板/存储模式/播放头 */
+        try {
+          MTG.state.project = bak.project;
+          MTG.state.currentBoardId = bak.board;
+          MTG.storage.mode = bak.mode;
+          MTG.storage.dirName = bak.dir;
+          MTG.state.playhead = bak.playhead;
+          MTG.render();
+        } catch (_) {}
+      }
       return JSON.stringify(out);
     },
 

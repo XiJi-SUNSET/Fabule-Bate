@@ -13,8 +13,11 @@ const FORMAT_VERSION = 2;
 const SHOT_ID_RE = /^sh_[0-9a-f]{8}$/;
 const ASSET_ID_RE = /^as_[0-9a-f]{8}$/;
 const ASSET_KINDS = ['image', 'audio'];
-/* 素材路径只允许工程内 assets/{image,audio}/ 下的相对路径（防穿越） */
-const ASSET_PATH_RE = /^assets\/(image|audio)\/[A-Za-z0-9._-]+$/;
+/* 素材路径只允许工程内 assets/{image,audio}/ 下的相对路径（防穿越）。
+   文件名保留集与 importAssets / U.safeFileName 的净化规则一致 —— 允许中文。
+   此前只允许 ASCII：中文名素材（导入特意保留原名）写盘后被 normalize 丢弃，
+   fabula.json 与内存基线永久错位 → 每次保存都误报"外部更新"（用户反馈）。 */
+const ASSET_PATH_RE = /^assets\/(image|audio)\/[A-Za-z0-9._\u4e00-\u9fa5-]+$/;
 
 /* description 结构采纳 montage 分镜表的已验证字段集：
    content/dialogue/sfx/notes 为自由文本，size/move/lens/trans 为软枚举（值即自由字符串，

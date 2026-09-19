@@ -99,13 +99,27 @@ test('探针回归：重命名（含 IME）/ 素材生命周期 / 导入命名',
   const life = JSON.parse(r.life);
   const nam = JSON.parse(r.naming);
   assert.ok(!ren.error, '重命名探针异常：' + ren.error);
-  assert.equal(ren.renamedA, true, '直接输入 + 回车应写回新组名');
+  assert.equal(ren.okA, true, '✎ 按钮进入编辑 + 回车应写回新组名');
+  assert.equal(ren.inputB, true, '双击组头任意处（非名字区域）也应进入编辑');
+  assert.equal(ren.okB, true, '编辑中 Escape 应真取消（不写回）');
   assert.equal(ren.imeGuard, true, '输入法组合中按回车不得把上屏前的旧值写回');
-  assert.equal(ren.renamedB, true, '输入法上屏（compositionend）后应自动提交新名');
+  assert.equal(ren.okC, true, 'compositionend 时 value 未落定 → 延迟一拍读到新值并提交');
+  assert.equal(ren.restoredD, true, '编辑中外部重渲染 → 输入框应自动恢复（用户"重命名没用"的隐藏源头）');
+  assert.equal(ren.draftKeptD, true, '恢复后草稿应保留');
+  assert.equal(ren.okD, true, '恢复后回车应能提交草稿');
   assert.ok(!life.error, '素材生命周期探针异常：' + life.error);
   assert.equal(life.ok, true, '素材：精确补录 / 删除不复活 / 磁盘副本回收 全链路');
   assert.ok(!nam.error, '导入命名探针异常：' + nam.error);
   assert.ok(Array.isArray(nam.assets), '导入命名探针应返回素材清单');
+});
+
+test('探针回归：时间轴编辑 → 预览即时同步（移动分镜后不必点时间轴）', { skip }, () => {
+  const o = runProbe('window.__fabulaTest.timelinePreviewProbe(window.__fabulaSmokeDir)');
+  assert.ok(!o.error, '预览同步探针异常：' + o.error);
+  assert.equal(o.before, 'bd-pv', '播放头落在片段内时画板应切到该帧');
+  assert.equal(o.duringFollowed, true, '拖动中预览应跟随（跨过帧边界即卸载旧帧）');
+  assert.equal(o.away, true, '片段拖离后画板应卸载（不再挂旧帧 —— 用户"必须点一下时间轴"的根因）');
+  assert.equal(o.back, true, '片段拖回播放头下应切回该帧');
 });
 
 test('探针回归：拖拽兜底（dragGuardProbe · R5-2）', { skip }, () => {

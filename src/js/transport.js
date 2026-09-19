@@ -103,6 +103,14 @@
     stopSources() {
       A.sources.forEach(s => { try { s.stop(); } catch (e) {} });
       A.sources = [];
+    },
+
+    /* 播放中重排音频调度（片段布局变化后调用）：
+       已调度的 WebAudio source 不会自己搬家/停止 —— 移动、裁剪、删除、上轨
+       都要重排才能在播放中即时听到新布局（PR 语义）。非播放态是空操作。 */
+    rescheduleIfPlaying() {
+      if (!A.playing) return false;
+      try { A.play(); return true; } catch (_) { return false; }
     }
   });
 

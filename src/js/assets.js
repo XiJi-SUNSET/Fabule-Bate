@@ -19,6 +19,7 @@
     _rt: 0,                             // render 代际（H-14：并发 render 时后发者胜，防重复条目）
     _delArm: null,                      // 删除二次确认：待确认的条目 key（或 'batch'）
     _delTimer: null,
+    _renaming: null,                    // 进行中的分组重命名 { gid, draft }（外部重渲染后据此恢复编辑态）
 
     /* 收集全部条目：分镜帧 + 素材，统一形状 */
     allItems() {
@@ -93,6 +94,15 @@
       if (tk !== A._rt) return;
       if (!any) box.innerHTML = '<div class="empty-note">还没有素材<br>点「导入」添加，或「新建帧」开始分镜</div>';
       A.syncSelBar();
+      /* 恢复被外部重渲染打断的组名编辑（见 renameGroup 注释第 3 点） */
+      if (A._renaming) {
+        const rg = (p.groups || []).find(x => x.id === A._renaming.gid);
+        const heads = box.querySelectorAll('.group-head');
+        let nm2 = null;
+        for (const h of heads) if (h.dataset.gid === A._renaming.gid) { nm2 = h.querySelector('.g-name'); break; }
+        if (rg && nm2) A.renameGroup(rg, nm2, A._renaming.draft);
+        else A._renaming = null;      // 组被删/被过滤：放弃恢复
+      }
     },
 
     /* ── 选择状态（批量删除用） ── */
@@ -193,6 +203,8 @@
 
       MTG.markDirty();
       MTG.render();
+      /* 播放中删除素材/片段：音频调度重排（被删的声不应继续） */
+      if (MTG.audio && MTG.audio.rescheduleIfPlaying) MTG.audio.rescheduleIfPlaying();
 
       /* 磁盘副本：与保留条目同 path 的不删（防御同文件被多条引用） */
       const stillUsed = new Set();
@@ -217,6 +229,69 @@
       }
     },
 
+    /* 分组重命名（双击组头 / ✎ 按钮 / 编辑被打断后的恢复，统一走这里）。
+       加固要点（用户两轮反馈"重命名没用"后的收敛）：
+       1) 入口不唯一：双击必须精确命中 .g-name 太苛刻 —— 组头整行委托双击 + ✎ 显式按钮；
+       2) IME：组合期间不提交（回车是"上屏"不是"确认"）；compositionend 后延迟一拍再读
+          input.value（部分 IME 在该事件之后才把文本落进 value，立即读会拿到旧值）；
+       3) 抗打断：编辑期间任何外部 MTG.render() 会整体重建素材库 —— 通过 _renaming
+          记录草稿，render 尾部自动恢复编辑态（否则打字打到一半输入框消失 = "没用"）。 */
+    renameGroup(s, nm, draft) {
+      if (!s || !s.id || !nm) return;
+      if (nm.querySelector('.g-rename')) return;      // 已在编辑态
+      const input = document.createElement('input');
+      input.value = draft != null ? draft : s.name;
+      input.className = 'g-rename';
+      nm.textContent = '';
+      nm.appendChild(input);
+      A._renaming = { gid: s.id, draft: input.value };
+      let done = false, composing = false, enterDuringCompose = false;
+      const commit = (cancel, delayed) => {
+        if (done) return;
+        if (delayed) { setTimeout(() => commit(cancel), 0); return; }   // 等 IME 把文本落进 value
+        done = true;
+        A._renaming = null;
+        const v = cancel ? s.name : input.value.trim();
+        if (!cancel && v && v !== s.name) {
+          const p0 = MTG.state.project;
+          const t = p0 && p0.groups.find(x => x.id === s.id);
+          if (t) t.name = v;
+          MTG.markDirty();
+          MTG.toast('分组已重命名为「' + v + '」');
+        }
+        A.render();
+      };
+      input.oninput = () => { if (A._renaming && A._renaming.gid === s.id) A._renaming.draft = input.value; };
+      input.onblur = () => {
+        /* 外部重渲染（box.innerHTML=''）移除聚焦元素也会派发 blur —— 实测派发时机
+           早于元素脱离文档（此刻 isConnected 仍为 true），若立即提交会把草稿当成
+           "用户确认"、并让 render 尾部的编辑恢复失效（用户反馈"重命名没用"的隐藏源头）。
+           延迟一拍再判定：元素仍在文档 = 用户主动失焦（提交）；已脱离 = 编辑被打断
+           （跳过，由 render 尾部恢复编辑态与草稿）。 */
+        setTimeout(() => { if (input.isConnected) commit(false); }, 0);
+      };
+      input.addEventListener('compositionstart', () => { composing = true; });
+      input.addEventListener('compositionend', () => {
+        composing = false;
+        if (enterDuringCompose) { enterDuringCompose = false; commit(false, true); }
+      });
+      input.addEventListener('keydown', e2 => {
+        if (composing || e2.isComposing || e2.keyCode === 229) {   // IME 组合中：交还输入法
+          if (e2.key === 'Enter') enterDuringCompose = true;
+          return;
+        }
+        if (e2.key === 'Enter') { e2.preventDefault(); commit(false); }
+        if (e2.key === 'Escape') { e2.preventDefault(); commit(true); }
+      });
+      /* 聚焦双保险：双击的默认行为 / 外部 render 可能抢走焦点 */
+      const focusIt = () => {
+        if (done || document.activeElement === input) return;
+        try { input.focus(); input.setSelectionRange(input.value.length, input.value.length); } catch (_) {}
+      };
+      requestAnimationFrame(focusIt);
+      setTimeout(focusIt, 80);
+    },
+
     groupHead(s, count) {
       const head = document.createElement('div');
       head.className = 'group-head' + (s.id ? '' : ' ungrouped');
@@ -235,51 +310,14 @@
       nm.className = 'g-name';
       nm.textContent = s.name;
       if (s.id) nm.title = '双击重命名';      // 低项：未分组不可重命名，别给误导提示
-      nm.ondblclick = (ev) => {
-        if (!s.id) return;                    // 未分组没有名字可改
-        /* 提交路径：回车/失焦直接 commit（done 防重入）、Escape 真取消、值未变不脏标记。
-           IME（中文输入法）要点：用户按的回车往往是「上屏候选」而不是「确认输入」——
-           组合中的 keydown 会带 isComposing/keyCode 229，此刻 input.value 还是上屏前的
-           旧值，直接 commit 会把旧名字写回去（用户实测"输入新名字回车后仍是旧名"）。
-           所以组合期间不 commit；组合结束（compositionend）时若期间按过回车，视为确认。 */
-        if (ev) { ev.preventDefault(); ev.stopPropagation(); }
-        if (nm.querySelector('.g-rename')) return;      // 已在编辑态
-        const input = document.createElement('input');
-        input.value = s.name;
-        input.className = 'g-rename';
-        nm.textContent = '';
-        nm.appendChild(input);
-        let done = false, composing = false, enterDuringCompose = false;
-        const commit = (cancel) => {
-          if (done) return;
-          done = true;
-          const v = cancel ? s.name : input.value.trim();
-          const p0 = MTG.state.project;
-          if (v && s.id && p0) {
-            const g = p0.groups.find(x => x.id === s.id);
-            if (g && g.name !== v) { g.name = v; MTG.markDirty(); }
-          }
-          A.render();
-        };
-        input.onblur = () => commit(false);
-        /* composition 监听用 addEventListener：on* 属性在部分环境对脚本派发的
-           CompositionEvent 不生效（冒烟探针实测），addEventListener 是可靠路径 */
-        input.addEventListener('compositionstart', () => { composing = true; });
-        input.addEventListener('compositionend', () => {
-          composing = false;
-          if (enterDuringCompose) { enterDuringCompose = false; commit(false); }
+      if (s.id) {
+        /* 双击入口放在整行组头：只认 .g-name 太苛刻（双击落在计数/空隙上就毫无反应，
+           用户两轮反馈"重命名没用"）。✎ 按钮是显式入口（系统双击速度慢/触控板也可靠）。 */
+        head.addEventListener('dblclick', ev => {
+          if (ev.target.closest && ev.target.closest('.g-fold, .g-x, .g-rename-btn, .g-rename')) return;
+          A.renameGroup(s, nm);
         });
-        input.onkeydown = e2 => {
-          if (composing || e2.isComposing || e2.keyCode === 229) {   // IME 组合中：交还输入法
-            if (e2.key === 'Enter') enterDuringCompose = true;
-            return;
-          }
-          if (e2.key === 'Enter') { e2.preventDefault(); commit(false); }
-          if (e2.key === 'Escape') { e2.preventDefault(); commit(true); }
-        };
-        /* 延迟聚焦：双击的默认行为（选中/后续 click）会抢走焦点，立即 focus 可能被覆盖 */
-        requestAnimationFrame(() => { try { input.focus(); input.select(); } catch (_) {} });
-      };
+      }
 
       const cnt = document.createElement('span');
       cnt.className = 'g-count';
@@ -288,6 +326,14 @@
       head.appendChild(fold); head.appendChild(nm); head.appendChild(cnt);
 
       if (s.id) {
+        const rn = document.createElement('button');
+        rn.className = 'g-rename-btn';
+        rn.textContent = '✎';
+        rn.title = '重命名分组（也可以双击组名）';
+        rn.onclick = e => { e.stopPropagation(); A.renameGroup(s, nm); };
+        rn.addEventListener('mousedown', e => e.stopPropagation());
+        head.appendChild(rn);
+
         const del = document.createElement('button');
         del.className = 'g-x';
         del.textContent = '✕';
@@ -472,6 +518,8 @@
       MTG.state.selectedClipIds = new Set([clip.id]);
       MTG.timeline.render();
       MTG.markDirty();
+      /* 播放中上轨：立即发声（PR 语义） */
+      if (MTG.audio && MTG.audio.rescheduleIfPlaying) MTG.audio.rescheduleIfPlaying();
       MTG.toast('已把音频放到播放头：' + asset.name + (moved ? '，顺推 ' + moved + ' 个片段' : ''));
     },
 

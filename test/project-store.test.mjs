@@ -117,3 +117,36 @@ test('fabula.json 外部变更：sources 含 fabula（且不误报 montage）', 
   assert.ok(!last.sources.includes('montage'), 'montage 未变不应出现在 sources');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('中文名素材路径：sanitizeAsset 接受（与导入/渲染端命名规则一致）', () => {
+  const a = M.sanitizeAsset({
+    id: 'as_0000000a', name: '素材-中文名', kind: 'audio',
+    path: 'assets/audio/素材-中文名.mp3', group: null,
+  });
+  assert.ok(a, '中文素材文件名不应被路径规范丢弃（此前被丢弃 → 基线与清单永久错位 → 每次保存都误报外部更新）');
+  assert.equal(a.path, 'assets/audio/素材-中文名.mp3');
+  /* 防穿越底线保持：不含路径分隔的越界写法仍应被拒 */
+  assert.equal(M.sanitizeAsset({ id: 'as_0000000b', name: 'x', kind: 'audio', path: 'assets/audio/../evil.mp3', group: null }), null);
+});
+
+test('导入中文名素材：真实链路落盘后不触发 fabula 外部变更误报（用户反馈回归）', () => {
+  const { dir, events } = setup();
+  const st = store.__test.state;
+  st.project = M.newProjectModel('t');
+  fs.writeFileSync(path.join(dir, 'fabula.json'), JSON.stringify(st.project, null, 2));
+  st.lastJson = JSON.stringify(st.project, null, 2);
+  /* 造一个中文名 MP3（ID3 magic 头）在工程外临时路径 */
+  const src = path.join(os.tmpdir(), 'fab-测试音频.mp3');
+  fs.writeFileSync(src, Buffer.from([0x49, 0x44, 0x33, 3, 0, 0, 0, 0, 0, 0, 0, 0]));
+  const r = store.importAssets([src]);
+  assert.equal(r.added, 1, '中文名音频应导入成功（而不是被静默跳过）');
+  assert.equal(r.addedPaths[0], 'assets/audio/fab-测试音频.mp3');
+  /* 导入的媒体是自身写入：watch 里应被吞掉，不冒泡成 media 广播 */
+  assert.equal(store.__test.consumeSelfMedia(r.addedPaths[0]), true, '导入的文件应登记为自写');
+  /* 关键：此后任何 watch 事件（如编辑音频触发的 montage 保存）不得报 fabula 外部变更 */
+  events.length = 0;
+  store.__test.notifyChanged();
+  assert.ok(!events.at(-1).sources.includes('fabula'), '导入中文名素材后不得误报 fabula（用户反馈：编辑音频总是弹"外部更新"）');
+  fs.rmSync(src, { force: true });
+  fs.rmSync(dir, { recursive: true, force: true });
+});

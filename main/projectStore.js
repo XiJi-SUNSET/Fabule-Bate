@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { newProjectModel, normalizeProject, sanitizeShot, genAssetId, SHOT_ID_RE } = require('./projectModel.cjs');
+const { newProjectModel, normalizeProject, sanitizeShot, sanitizeAsset, genAssetId, SHOT_ID_RE } = require('./projectModel.cjs');
 
 const PTR_FILE = path.join(os.homedir(), '.fabula', 'current-project.json');
 
@@ -14,8 +14,7 @@ const state = {
   watcher: null,
   lastJson: '',       // 上次成功落盘的 fabula.json 文本（watch 回环抑制）
   lastMontage: null,  // 上次已知的 montage.json 文本（null = 尚未建立基线）
-  mediaFiles: new Set(),   // boards/shots/assets 下"外部"改动的文件（N-A5）
-  selfWriteAt: 0
+  mediaFiles: new Set()    // boards/shots/assets 下"外部"改动的文件（N-A5）
 };
 
 /* 自写媒体抑制（N-A5 修订）：UI 保存帧图/素材经 project:writeFile 落盘，
@@ -94,6 +93,16 @@ function createProject(dirPath, name) {
    且它会把渲染端模型 normalize 成 shots 模型写 fabula.json（埋雷函数本体）。
    真实保存走渲染端 → project:writeFile → montage.json。 */
 
+/* 把内存模型规范化后写回 fabula.json，并同步"已知基线"（lastJson）。
+   为什么写盘前也要 normalize：notifyChanged 判定"外部变更"时拿【磁盘 normalize 后】
+   与 lastJson 比较；若写盘对象未经规范化，两边口径不一致会永久误报
+   （实例：中文名素材被旧的 sanitizeAsset 路径规则丢弃 → 每次保存 montage.json
+   触发的 watch 都会误报"外部更新了工程数据"，用户反馈）。 */
+function persistModel() {
+  state.project = normalizeProject(state.project);
+  state.lastJson = writeJsonAtomic(path.join(state.root, 'fabula.json'), state.project);
+}
+
 /* 渲染端把画布导出为 PNG dataURL 写入指定镜头 */
 function writeShotImage(shotId, dataUrl) {
   if (!state.root) throw new Error('没有打开的工程');
@@ -114,8 +123,7 @@ function writeShotImage(shotId, dataUrl) {
   const rel = 'shots/' + shotId + '.png';
   writeAtomic(path.join(state.root, rel), buf);
   shot.image = rel;
-  state.lastJson = writeJsonAtomic(path.join(state.root, 'fabula.json'), state.project);
-  state.selfWriteAt = Date.now();
+  persistModel();
   markSelfMedia(rel);      // M-15：帧图是自身写入，登记后在 watch 里不当作"外部媒体变更"广播
   return snapshot();
 }
@@ -166,6 +174,9 @@ function startWatch(root) {
       /* 媒体文件（帧图/素材）变化也要标记（Agent 纯换图不改任何 JSON）；
          自写吞掉与 tmp 过滤见 noteWatchName（N-A5 修订 + 误报根因修复） */
       noteWatchName(name);
+      /* 锁文件（montage.json.lock）是写事务的内部产物、不承载内容：
+         过滤掉，避免每次保存都空跑一轮变更判定（广播里也只剩噪声） */
+      if (/\.lock$/.test(String(name || '').replace(/\\/g, '/'))) return;
       scheduleNotify();
     });
     /* 被监视目录被删/掉线时 error 不监听会变 uncaughtException（L-14） */
@@ -197,9 +208,14 @@ function notifyChanged() {
   let fabulaChanged = false;
   try {
     const disk = JSON.parse(fs.readFileSync(path.join(state.root, 'fabula.json'), 'utf8'));
-    /* 与 normalize 后的内存模型比较（M-6）：lastJson 存的是 normalize 结果，
-       直接比原文会在「agent 原文含默认缺失字段」时持续误报 external、反复广播 */
-    fabulaChanged = JSON.stringify(normalizeProject(disk), null, 2) !== state.lastJson;
+    /* 口径对称比较（M-6 加强）：磁盘与内存**都**过 normalizeProject 再比。
+       只比 lastJson 在"内存模型与规范化结果不一致"时会永久错位、持续误报
+       （实例：中文名素材写盘后被旧路径规则丢弃 → 每次保存都弹"外部更新"）；
+       与"当前内存模型归一化后"相同也视为自己人（自写产生的等效态）。 */
+    const diskNorm = JSON.stringify(normalizeProject(disk), null, 2);
+    let memNorm = '';
+    try { memNorm = state.project ? JSON.stringify(normalizeProject(state.project), null, 2) : ''; } catch (_) {}
+    fabulaChanged = diskNorm !== state.lastJson && diskNorm !== memNorm;
   } catch (_) { fabulaChanged = false; }   // JSON 正被写一半（tmp rename 原子性保证不会读到半截；读不到就不误报）
   if (fabulaChanged) {
     sources.push('fabula');
@@ -286,25 +302,29 @@ function importAssets(filePaths) {
         fname = base + '-' + (++n) + ext;
       }
       const rel = 'assets/' + kind + '/' + fname;
-      writeAtomic(path.join(state.root, rel), buf);
-      copied.push(rel);
-      state.project.assets.push({
+      /* 先过与"外部变更判定"同一套规范（sanitizeAsset）：不合规的名字在源头拒收，
+         而不是"写进 fabula.json → 下次 normalize 悄悄丢掉 → 基线与清单永久错位" */
+      const asset = sanitizeAsset({
         id,
         name: path.basename(src, path.extname(src)).slice(0, 120) || '素材',
         kind, path: rel, group: null
       });
+      if (!asset) { skipped++; continue; }
+      writeAtomic(path.join(state.root, rel), buf);
+      copied.push(rel);
+      markSelfMedia(rel);      // 导入也是自身写入：不登记的话每次导入都被当成外部媒体变更广播
+      state.project.assets.push(asset);
       added.push(id);
     } catch (_) { skipped++; }
   }
   try {
-    state.lastJson = writeJsonAtomic(path.join(state.root, 'fabula.json'), state.project);
+    persistModel();
   } catch (e) {
     /* 清单写失败：删除本轮刚落盘的媒体并回滚内存清单，避免"有文件无清单"的孤儿素材（M-4） */
     for (const rel of copied) { try { fs.rmSync(path.join(state.root, rel), { force: true }); } catch (_) {} }
     state.project.assets = state.project.assets.filter((a) => added.indexOf(a.id) < 0);
     throw e;
   }
-  state.selfWriteAt = Date.now();
   /* addedPaths：本次复制进工程的文件相对路径清单。
      渲染端据此**精确**补录新素材，而不是全盘扫描 ——
      全盘扫描会把 assets/ 里的历史遗留文件也一并收进素材库（"导入一个出现两条"）。 */
@@ -325,8 +345,7 @@ function removeAssets(rels) {
   const removed = before - state.project.assets.length;
   if (removed) {
     try {
-      state.lastJson = writeJsonAtomic(path.join(state.root, 'fabula.json'), state.project);
-      state.selfWriteAt = Date.now();
+      persistModel();
     } catch (e) {
       console.error('[fabula] removeAssets 清单写入失败：', e.message);
     }

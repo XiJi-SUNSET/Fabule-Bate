@@ -816,6 +816,18 @@
       };
       let lastIns = insOf();
 
+      /* 拖动中让预览跟随（PR 语义）：rAF 合帧 + syncToPlayhead 自带短路
+         （命中未变立即返回），只有跨过"帧边界"（播放头处归属变化）才真正切帧，
+         逐帧开销可忽略。用户反馈：编辑后要手动点一下时间轴，预览才更新。 */
+      let pvRaf = 0;
+      const syncPreview = () => {
+        if (pvRaf) return;
+        pvRaf = requestAnimationFrame(() => {
+          pvRaf = 0;
+          if (MTG.board && MTG.board.syncToPlayhead) MTG.board.syncToPlayhead().catch(() => {});
+        });
+      };
+
       try { el.setPointerCapture(e.pointerId); } catch (err) {}
       el.classList.add('dragging');
       TL.dragging = true;      // H-13：拖动会话标志 —— 外部同步（Agent 广播）期间不重建 DOM
@@ -876,6 +888,7 @@
               startX = ev.clientX;
               bounds = TL.neighborBounds(clip.trackId, clip.start, clip.start + clip.dur, clip.id);
               el.style.left = TL.timeToX(clip.start) + 'px';
+              syncPreview();
               return;
             }
           }
@@ -933,6 +946,7 @@
           if (cv) TL.drawWave(cv, clip, null);
         }
         if (clip.kind === 'board' && MTG.state.currentBoardId === clip.boardId) MTG.ui.syncBoardMeta();
+        syncPreview();
       };
 
       /* R5-5：pointercancel（笔/触屏被系统打断）必须"取消即回滚"，不再照常提交 ——
@@ -943,6 +957,7 @@
         el.removeEventListener('pointerup', onUp);
         el.removeEventListener('pointercancel', onCancel);
         clearTimeout(guardTimer);
+        if (pvRaf) { cancelAnimationFrame(pvRaf); pvRaf = 0; }
         try { el.releasePointerCapture(ev.pointerId); } catch (err) {}
         if (canceled) {
           clip.start = o.start; clip.dur = o.dur; clip.offset = o.offset; clip.trackId = o.trackId;
@@ -956,6 +971,14 @@
         TL.dragging = false;     // H-13：拖动结束，积压的外部同步可以补跑
         if (MTG.app && MTG.app.resumeExternal) { try { MTG.app.resumeExternal(); } catch (_) {} }
         if (canceled) MTG.toast && MTG.toast('拖拽已取消');
+        /* 松手把预览钉到最终状态（拖动中 rAF 可能未跑完/被取消）：
+           移动/裁剪改变了"播放头处的画面归属" —— 不必再手动点一下时间轴。
+           取消时也要同步（回滚后预览要回到原帧）。 */
+        if (MTG.board && MTG.board.syncToPlayhead) {
+          MTG.board.syncToPlayhead().catch(() => {});
+        }
+        /* 播放中：音频片段的新布局立即生效（已调度的 WebAudio source 不会自己搬家） */
+        if (!canceled && MTG.audio && MTG.audio.rescheduleIfPlaying) MTG.audio.rescheduleIfPlaying();
       };
       const onUp = ev => finish(ev, false);
       const onCancel = ev => finish(ev, true);
@@ -1017,6 +1040,9 @@
       MTG.state.selectedClipIds = new Set([clip.id]);
       MTG.markDirty();
       TL.render();
+      /* 放到播放头处的帧立即预览；播放中拖入音频立即发声（PR 语义） */
+      if (MTG.board && MTG.board.syncToPlayhead) MTG.board.syncToPlayhead().catch(() => {});
+      if (MTG.audio && MTG.audio.rescheduleIfPlaying) MTG.audio.rescheduleIfPlaying();
       MTG.toast('已放置：' + clip.name + (moved ? '，顺推 ' + moved + ' 个片段' : ''));
     },
 
@@ -1043,6 +1069,8 @@
       MTG.state.selectedClipIds = new Set();
       MTG.markDirty();
       MTG.render();
+      /* 播放中删片段：被删的音频不应继续发声（重排） */
+      if (MTG.audio && MTG.audio.rescheduleIfPlaying) MTG.audio.rescheduleIfPlaying();
     }
   });
 })();
