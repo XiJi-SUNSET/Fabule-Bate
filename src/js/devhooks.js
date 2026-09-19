@@ -875,13 +875,15 @@
               input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }));
               await sleep(40);
               out.imeGuard = nameOf() === '按钮改名'; // 组合中按回车不得提交
-              /* 关键：compositionend 派发时 value 尚未被 IME 落文本（部分输入法如此） */
+              /* 关键：compositionend 派发时 value 尚未被 IME 落文本（部分输入法如此）；
+                 真实管线在文本落定后会伴随 input 事件 —— 按真实顺序模拟 */
               input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '输入法名' }));
               out.valueAtEndC = input.value;          // 此刻仍是旧名
               input.value = '输入法名';                // 下一拍才落进 value
+              input.dispatchEvent(new Event('input', { bubbles: true }));
               await sleep(180);
               out.nameC = nameOf();
-              out.okC = out.nameC === '输入法名';      // 延迟提交应读到上屏后的新值
+              out.okC = out.nameC === '输入法名';      // 上屏后的 input 应实时写回模型
             }
           }
         }
@@ -984,6 +986,58 @@
           MTG.storage.dirName = bak.dir;
           MTG.state.playhead = bak.playhead;
           MTG.render();
+        } catch (_) {}
+      }
+      return JSON.stringify(out);
+    },
+
+    /* 标尺滚轮缩放探针（用户需求：鼠标停在标尺上滚轮缩放，含光标锚定与毛玻璃样式）：
+       1) 标尺 hover 滚轮 → 时间轴缩放，锚点处的时间不漂移；
+       2) 反向滚轮 → 缩小；3) 标尺应有 backdrop-filter（毛玻璃）。 */
+    async rulerZoomProbe() {
+      const out = {};
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const st = MTG.state;
+      const scEl = document.getElementById('tl-scroll');
+      const bak = { project: st.project, pps: st.pxPerSec, scrollLeft: scEl ? scEl.scrollLeft : null };
+      try {
+        const p = st.project || (st.project = MTG.newProject('ruler-probe'));
+        if (!p.tracks.length) p.tracks.push({ id: 'tr-rz', name: '分镜', kind: 'board', h: 90, muted: false });
+        if (!p.clips.length) {
+          p.clips = [{ id: 'cl-rz', trackId: p.tracks[0].id, kind: 'board', boardId: null, name: '镜头', start: 0, dur: 60, offset: 0 }];
+        } else {
+          p.clips[0].dur = Math.max(p.clips[0].dur, 60);   // 内容够宽：锚定不被 scrollLeft clamp 干扰
+        }
+        MTG.timeline.setZoom(60);
+        await sleep(120);
+        const sc = document.getElementById('tl-scroll');
+        const ruler = document.getElementById('ruler');
+        if (!sc || !ruler) { out.error = '找不到时间轴元素'; return JSON.stringify(out); }
+        sc.scrollLeft = 0;
+        await sleep(50);
+        const cs = getComputedStyle(ruler);
+        out.backdrop = (cs.backdropFilter || cs.webkitBackdropFilter || 'none') !== 'none';
+        const r0 = ruler.getBoundingClientRect();
+        const x = r0.left + 300, y = r0.top + 10;
+        const t0 = 300 / st.pxPerSec;
+        const sBefore = r0.left + MTG.timeline.timeToX(t0);
+        ruler.dispatchEvent(new WheelEvent('wheel', { clientX: x, clientY: y, deltaY: -100, bubbles: true, cancelable: true }));
+        await sleep(80);
+        out.grew = st.pxPerSec > 60;
+        out.driftPx = Math.round((ruler.getBoundingClientRect().left + MTG.timeline.timeToX(t0)) - sBefore);
+        const afterIn = st.pxPerSec;
+        ruler.dispatchEvent(new WheelEvent('wheel', { clientX: x, clientY: y, deltaY: 100, bubbles: true, cancelable: true }));
+        await sleep(80);
+        out.shrank = st.pxPerSec < afterIn;
+        out.ok = !!(out.backdrop && out.grew && Math.abs(out.driftPx) <= 2 && out.shrank);
+      } catch (e) { out.error = (e && e.message) || String(e); }
+      finally {
+        /* 不泄漏全局状态：还原工程/缩放/滚动位置 */
+        try {
+          st.project = bak.project;
+          MTG.timeline.setZoom(bak.pps || 60);
+          const sc = document.getElementById('tl-scroll');
+          if (sc && bak.scrollLeft != null) sc.scrollLeft = bak.scrollLeft;
         } catch (_) {}
       }
       return JSON.stringify(out);

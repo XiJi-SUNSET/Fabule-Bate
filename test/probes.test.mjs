@@ -113,6 +113,15 @@ test('探针回归：重命名（含 IME）/ 素材生命周期 / 导入命名',
   assert.ok(Array.isArray(nam.assets), '导入命名探针应返回素材清单');
 });
 
+test('探针回归：标尺滚轮缩放（毛玻璃 + 光标锚定）', { skip }, () => {
+  const o = runProbe('window.__fabulaTest.rulerZoomProbe()');
+  assert.ok(!o.error, '标尺缩放探针异常：' + o.error);
+  assert.equal(o.backdrop, true, '标尺应有 backdrop-filter（毛玻璃）');
+  assert.equal(o.grew, true, '标尺上滚轮向上应放大时间轴');
+  assert.ok(Math.abs(o.driftPx) <= 2, '缩放锚点应停在光标下（漂移 ' + o.driftPx + 'px）');
+  assert.equal(o.shrank, true, '滚轮向下应缩小时间轴');
+});
+
 test('探针回归：时间轴编辑 → 预览即时同步（移动分镜后不必点时间轴）', { skip }, () => {
   const o = runProbe('window.__fabulaTest.timelinePreviewProbe(window.__fabulaSmokeDir)');
   assert.ok(!o.error, '预览同步探针异常：' + o.error);

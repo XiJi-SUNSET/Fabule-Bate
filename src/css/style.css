@@ -1,4 +1,4 @@
-/* Montage · 分镜台
+/* Fabula · 分镜台
    风格遵循《开发规范》审美指南：现代简约 + 构成主义 + 毛玻璃 + 印象派微渐变
    主色红 #eb684b / 点缀蓝 #7bbbe3 / 文本深暖灰 #3d3a36（暗色：暖灰夜色，红蓝不变）
    编辑器形态参考 Premiere：顶栏 / 上左右（素材库｜画板）/ 底部时间轴
@@ -33,6 +33,7 @@
   /* 编辑器专用：面板/轨道/播放头 */
   --stage: rgba(255, 255, 255, 0.42);
   --panel: rgba(253, 247, 240, 0.55);
+  --ruler-bg: rgba(253, 247, 240, 0.82);   /* 标尺底色：比面板更实一档，刻度不被滚动内容干扰 */
   --track: rgba(61, 58, 54, 0.045);
   --track-alt: rgba(61, 58, 54, 0.025);
   --grid: rgba(61, 58, 54, 0.10);
@@ -52,6 +53,7 @@ body[data-theme="dark"] {
   --input-bg: rgba(0, 0, 0, 0.25);
   --stage: rgba(0, 0, 0, 0.28);
   --panel: rgba(54, 46, 41, 0.45);
+  --ruler-bg: rgba(46, 39, 35, 0.84);
   --track: rgba(255, 255, 255, 0.045);
   --track-alt: rgba(255, 255, 255, 0.02);
   --grid: rgba(240, 231, 221, 0.14);
@@ -395,7 +397,15 @@ textarea.sp-ctl { min-height: 34px; resize: vertical; line-height: 1.45; }
 
 .tl-scroll { flex: 1; overflow: auto; position: relative; }
 .tl-content { position: relative; min-height: 100%; }
-#ruler { display: block; position: sticky; top: 0; z-index: 3; background: var(--panel); border-bottom: 1px solid var(--border); cursor: text; }
+/* 标尺：毛玻璃（此前只有 --panel 的 45%~55% 半透明、没有 backdrop-filter，
+   滚动内容直接透上来导致刻度可读性差）——底色提高到 ~0.82 并模糊其下内容 */
+#ruler {
+  display: block; position: sticky; top: 0; z-index: 3;
+  background: var(--ruler-bg);
+  backdrop-filter: blur(10px) saturate(1.15);
+  -webkit-backdrop-filter: blur(10px) saturate(1.15);
+  border-bottom: 1px solid var(--border); cursor: text;
+}
 .tl-tracks { position: relative; }
 
 .track {

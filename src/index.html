@@ -7,13 +7,13 @@
      fabula: 用于工程文件（图片/音频经 fabula://proj 读取），data:/blob: 用于导出与缩略图。 -->
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' fabula: data: blob:; media-src 'self' fabula: data: blob:; connect-src 'self' fabula: data: blob:; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
-<title>Montage · 分镜台</title>
+<title>Fabula · 分镜台</title>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
 <header class="topbar">
-  <div class="brand"><i class="brand-mark"></i><span>Montage</span></div>
+  <div class="brand"><i class="brand-mark"></i><span>Fabula</span></div>
 
   <!-- 工作台切换（数据同一份，只是渲染形态不同） -->
   <div class="view-seg" id="view-switch" role="group" aria-label="切换工作台视图">
@@ -293,7 +293,7 @@
       <button id="btn-add-board-track" class="btn tiny">+ 分镜轨</button>
       <button id="btn-fix-overlap" class="btn tiny ghost hidden" title="同轨片段不能重叠：把重叠的片段按顺序往右顺推">整理重叠</button>
       <span class="divider"></span>
-      <span class="hint">拖动块移动 · 拖边缘裁剪 · 滚轮横向滚动 · Ctrl+滚轮缩放</span>
+      <span class="hint">拖动块移动 · 拖边缘裁剪 · 滚轮横向滚动 · 标尺上滚轮缩放 · Ctrl+滚轮缩放</span>
       <div class="tb-spacer"></div>
       <span id="tl-info" class="hint"></span>
     </div>

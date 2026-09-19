@@ -230,12 +230,13 @@
     },
 
     /* 分组重命名（双击组头 / ✎ 按钮 / 编辑被打断后的恢复，统一走这里）。
-       加固要点（用户两轮反馈"重命名没用"后的收敛）：
-       1) 入口不唯一：双击必须精确命中 .g-name 太苛刻 —— 组头整行委托双击 + ✎ 显式按钮；
-       2) IME：组合期间不提交（回车是"上屏"不是"确认"）；compositionend 后延迟一拍再读
-          input.value（部分 IME 在该事件之后才把文本落进 value，立即读会拿到旧值）；
-       3) 抗打断：编辑期间任何外部 MTG.render() 会整体重建素材库 —— 通过 _renaming
-          记录草稿，render 尾部自动恢复编辑态（否则打字打到一半输入框消失 = "没用"）。 */
+       最终形态 = 「打字即时写回模型」：不再依赖回车/失焦/blur 任何"提交时机"，
+       输入法上屏、点别处、被 render 打断都不会丢名字 —— 这是用户三次反馈
+       "重命名没用"后消灭整个提交风险面的做法（合成探针 + sendInputEvent 真实
+       注入都验证过非 IME 路径，剩下能失败的只有"提交时机"，索性取消该环节）：
+       · oninput（非组合）→ 立即写模型；compositionend（上屏）→ 立即写模型；
+       · Enter / 点别处（blur）→ 退出编辑；Escape → 还原进入时的原值；
+       · 编辑期间被外部 MTG.render() 重建 → _renaming 草稿 + render 尾部恢复编辑态。 */
     renameGroup(s, nm, draft) {
       if (!s || !s.id || !nm) return;
       if (nm.querySelector('.g-rename')) return;      // 已在编辑态
@@ -244,45 +245,57 @@
       input.className = 'g-rename';
       nm.textContent = '';
       nm.appendChild(input);
+      const original = s.name;                        // Escape 还原用（进入编辑时的名字）
       A._renaming = { gid: s.id, draft: input.value };
-      let done = false, composing = false, enterDuringCompose = false;
-      const commit = (cancel, delayed) => {
+      let done = false, composing = false;
+      const modelName = (t) => {
+        const p0 = MTG.state.project;
+        const g = p0 && p0.groups.find(x => x.id === s.id);
+        if (g && t != null && t !== '') g.name = t;
+        return g ? g.name : '';
+      };
+      /* 实时写回：每次（非组合的）输入都直接落到模型 —— 任何后续时序都无需再"提交" */
+      const apply = () => {
+        const v = input.value.trim();
+        if (v) modelName(v);
+      };
+      const exit = (cancel) => {
         if (done) return;
-        if (delayed) { setTimeout(() => commit(cancel), 0); return; }   // 等 IME 把文本落进 value
         done = true;
         A._renaming = null;
-        const v = cancel ? s.name : input.value.trim();
-        if (!cancel && v && v !== s.name) {
-          const p0 = MTG.state.project;
-          const t = p0 && p0.groups.find(x => x.id === s.id);
-          if (t) t.name = v;
+        if (cancel) modelName(original);              // Esc：还原
+        else apply();                                 // 收尾保险（最后一次输入未及 oninput 的边界）
+        const now = modelName();
+        if (!cancel && now && now !== original) {
           MTG.markDirty();
-          MTG.toast('分组已重命名为「' + v + '」');
+          MTG.toast('分组已重命名为「' + now + '」');
         }
         A.render();
       };
-      input.oninput = () => { if (A._renaming && A._renaming.gid === s.id) A._renaming.draft = input.value; };
-      input.onblur = () => {
-        /* 外部重渲染（box.innerHTML=''）移除聚焦元素也会派发 blur —— 实测派发时机
-           早于元素脱离文档（此刻 isConnected 仍为 true），若立即提交会把草稿当成
-           "用户确认"、并让 render 尾部的编辑恢复失效（用户反馈"重命名没用"的隐藏源头）。
-           延迟一拍再判定：元素仍在文档 = 用户主动失焦（提交）；已脱离 = 编辑被打断
-           （跳过，由 render 尾部恢复编辑态与草稿）。 */
-        setTimeout(() => { if (input.isConnected) commit(false); }, 0);
+      input.oninput = () => {
+        if (A._renaming && A._renaming.gid === s.id) A._renaming.draft = input.value;
+        if (composing) return;                        // 组合中的拼音不写模型（等上屏）
+        apply();
+        MTG.markDirty();
       };
       input.addEventListener('compositionstart', () => { composing = true; });
       input.addEventListener('compositionend', () => {
         composing = false;
-        if (enterDuringCompose) { enterDuringCompose = false; commit(false, true); }
+        apply();                                      // 上屏即写回，无需等回车
+        if (A._renaming && A._renaming.gid === s.id) A._renaming.draft = input.value;
       });
       input.addEventListener('keydown', e2 => {
-        if (composing || e2.isComposing || e2.keyCode === 229) {   // IME 组合中：交还输入法
-          if (e2.key === 'Enter') enterDuringCompose = true;
-          return;
-        }
-        if (e2.key === 'Enter') { e2.preventDefault(); commit(false); }
-        if (e2.key === 'Escape') { e2.preventDefault(); commit(true); }
+        if (composing || e2.isComposing || e2.keyCode === 229) return;   // IME 组合中：交还输入法
+        if (e2.key === 'Enter') { e2.preventDefault(); exit(false); }
+        if (e2.key === 'Escape') { e2.preventDefault(); exit(true); }
       });
+      input.onblur = () => {
+        /* 外部重渲染（box.innerHTML=''）移除聚焦元素也会派发 blur —— 实测派发时机
+           早于元素脱离文档（此刻 isConnected 仍为 true）。延迟一拍判定：
+           元素仍在文档 = 用户主动失焦（退出编辑）；已脱离 = 编辑被打断
+           （跳过，由 render 尾部恢复编辑态与草稿；模型里已实时保存过草稿）。 */
+        setTimeout(() => { if (input.isConnected) exit(false); }, 0);
+      };
       /* 聚焦双保险：双击的默认行为 / 外部 render 可能抢走焦点 */
       const focusIt = () => {
         if (done || document.activeElement === input) return;
@@ -316,6 +329,13 @@
         head.addEventListener('dblclick', ev => {
           if (ev.target.closest && ev.target.closest('.g-fold, .g-x, .g-rename-btn, .g-rename')) return;
           A.renameGroup(s, nm);
+        });
+      } else {
+        /* 「未分组」是固定分节（无 id、名字无处存）：双击给明确提示。
+           此前静默无反应，被用户当成"分组重命名坏了"（尤其音频刚导入时全在这里）。 */
+        head.addEventListener('dblclick', ev => {
+          if (ev.target.closest && ev.target.closest('.g-fold, .g-x, .g-rename-btn, .g-rename')) return;
+          MTG.toast('「未分组」是固定分节、不能改名 —— 音频导入后会自动归入音频轨分组，也可把素材拖进任意分组再改名', true);
         });
       }
 
@@ -510,6 +530,8 @@
       let dur = MTG.audio.durationOf(asset.id) || 5;
       const start = Math.max(0, MTG.state.playhead);
       const moved = MTG.timeline.makeRoom(track.id, start, dur);   // 同轨不重叠
+      /* 素材还没归组 → 上轨时归入音频轨分组（已有归组的尊重用户手动选择） */
+      if (asset.group == null) { try { asset.group = MTG.ensureTrackGroup(track); } catch (_) {} }
       const clip = {
         id: U.uid('cl'), trackId: track.id, kind: 'audio', assetId: asset.id,
         name: asset.name, start, dur, offset: 0, gain: 1
@@ -527,6 +549,7 @@
     async importFiles(fileList) {
       const p = MTG.state.project;
       if (!p || !MTG.storage.ready) { MTG.toast('请先打开工程文件夹', true); return; }
+      const audioGid = A._audioGroupId();
       let n = 0;
       for (const f of Array.from(fileList)) {
         const kind = U.kindOf(f.name);
@@ -540,7 +563,7 @@
           A.dropUrl(exist.id);
           MTG.audio.cache.delete(exist.id);
         } else {
-          p.assets.push({ id: U.uid('as'), name: f.name, kind, path, group: null });
+          p.assets.push({ id: U.uid('as'), name: f.name, kind, path, group: kind === 'audio' ? audioGid : null });
         }
         n++;
       }
@@ -554,6 +577,17 @@
       }
     },
 
+    /* 音频素材的默认归组：音频轨的分组（与"新帧归入轨道分组"同一语义）。
+       导入的音频若全堆在「未分组」，用户找不到可改名/可整理的组
+       （用户反馈："导入的音频素材的分组重命名是坏的" —— 双击的其实是未分组）。
+       会话中还没有音频轨时返回 null（保持未分组，等上轨时再归）。 */
+    _audioGroupId() {
+      const p = MTG.state.project;
+      const tr = p && (p.tracks || []).find(t => t.kind === 'audio');
+      if (!tr) return null;
+      try { return MTG.ensureTrackGroup(tr); } catch (_) { return tr.groupId || null; }
+    },
+
     /* 精确补录主进程刚导入的文件（替代导入后的全盘 rescan）：
        只把本次复制进工程的路径入列——工程 assets/ 里的历史遗留文件
        不会跟着冒出来（用户反馈：导入一个文件却出现两条）。 */
@@ -561,6 +595,7 @@
       const p = MTG.state.project;
       const list = (paths || []).map(x => String(x || '').replace(/\\/g, '/')).filter(Boolean);
       if (!p || !list.length) return 0;
+      const audioGid = A._audioGroupId();
       let n = 0, refreshed = 0;
       for (const rel of list) {
         const exist = p.assets.find(a => a.path === rel);
@@ -573,7 +608,7 @@
         }
         const kind = U.kindOf(rel);
         if (kind === 'other') continue;
-        p.assets.push({ id: U.uid('as'), name: rel.split('/').pop(), kind, path: rel, group: null });
+        p.assets.push({ id: U.uid('as'), name: rel.split('/').pop(), kind, path: rel, group: kind === 'audio' ? audioGid : null });
         n++;
       }
       if (n) MTG.markDirty();
@@ -590,10 +625,11 @@
       const p = MTG.state.project;
       if (!p || !MTG.storage.ready) { MTG.toast('请先打开工程文件夹', true); return; }
       const files = await MTG.storage.listMedia();
+      const audioGid = A._audioGroupId();
       let n = 0;
       for (const f of files) {
         if (p.assets.some(a => a.path === f.path)) continue;
-        p.assets.push({ id: U.uid('as'), name: f.name, kind: f.kind, path: f.path, group: null });
+        p.assets.push({ id: U.uid('as'), name: f.name, kind: f.kind, path: f.path, group: f.kind === 'audio' ? audioGid : null });
         n++;
       }
       /* 清理引用了但磁盘上已不存在的文件；引用它们的片段一并清掉，

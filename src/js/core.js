@@ -319,7 +319,9 @@
     if (!p.boardW || !p.boardH) { p.boardW = 1280; p.boardH = 720; }
     p.groups = p.groups || [];
     p.tracks.forEach(t => {
-      if (t.kind === 'board' && (!t.groupId || !p.groups.some(g => g.id === t.groupId))) {
+      /* 分镜轨与音频轨都配素材分组（新建/迁移一致）：
+         音频素材导入后要有个可改名、可整理的归处（用户反馈音频分组无处可改） */
+      if ((t.kind === 'board' || t.kind === 'audio') && (!t.groupId || !p.groups.some(g => g.id === t.groupId))) {
         let g = p.groups.find(x => x.name === t.name);
         if (!g) { g = { id: U.uid('g'), name: t.name }; p.groups.push(g); }
         t.groupId = g.id;

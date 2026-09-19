@@ -171,6 +171,8 @@ function createWindow() {
     minHeight: 700,
     backgroundColor: '#151719',
     title: 'Fabula',
+    /* 程序图标 = 品牌「缺角矩形」（build/icon.png，由 --smoke-make-icon 生成） */
+    icon: path.join(__dirname, '..', 'build', 'icon.png'),
     autoHideMenuBar: true,
     /* 冒烟模式：把窗口放到屏幕外显示 —— show:false 的隐藏窗口 rAF 会被暂停，
        截图只能抓到旧帧（表现为"UI 永远停在空态"的假象，实测踩过） */
@@ -314,6 +316,115 @@ function createWindow() {
           const r = await win.webContents.executeJavaScript(evalArg);
           console.log('[smoke-eval]', typeof r === 'object' ? JSON.stringify(r) : r);
         }
+        if (process.argv.includes('--smoke-real')) {
+          /* 真实输入管线冒烟（--smoke-real）：用 sendInputEvent 注入真实鼠标/键盘，
+             验证"双击/点击 + 键盘"在完整浏览器事件路径上成立 —— 合成 dispatchEvent
+             探针测不到这一半（dblclick 生成、焦点、char 输入都是真实管线行为）。
+             当前场景：素材库分组重命名（用户多轮反馈的战场）。 */
+          const wc = win.webContents;
+          const rsleep = (ms) => new Promise(r2 => setTimeout(r2, ms));
+          try { wc.focus(); } catch (_) {}
+          const tap = async (x, y, clickCount) => {
+            wc.sendInputEvent({ type: 'mouseDown', x: Math.round(x), y: Math.round(y), button: 'left', clickCount });
+            wc.sendInputEvent({ type: 'mouseUp', x: Math.round(x), y: Math.round(y), button: 'left', clickCount });
+            await rsleep(70);
+          };
+          const keyTap = (k, mods) => {
+            wc.sendInputEvent({ type: 'keyDown', keyCode: k, modifiers: mods || [] });
+            wc.sendInputEvent({ type: 'keyUp', keyCode: k, modifiers: mods || [] });
+          };
+          const typeText = (s) => { for (const ch of s) wc.sendInputEvent({ type: 'char', keyCode: ch }); };
+          const out = {};
+          try {
+            await rsleep(900);                                   // 页面就绪 + hook 挂载
+            const pos = JSON.parse(await wc.executeJavaScript(
+              '(function(){'
+              + ' var p = MTG.state.project = MTG.newProject("real-probe");'
+              + ' if (MTG.migrateProject) MTG.migrateProject(p);'
+              + ' p.groups = [{ id: "g-real", name: "旧组名" }];'
+              + ' p.assets = [{ id: "as-real", name: "素材", kind: "image", path: "assets/image/x.png", group: "g-real" }];'
+              + ' MTG.render();'
+              + ' return new Promise(function(res){ setTimeout(function(){'
+              + '  var head = null;'
+              + '  document.querySelectorAll("#asset-list .group-head").forEach(function(h){ if (h.dataset.gid === "g-real") head = h; });'
+              + '  if (!head) { res(JSON.stringify({ error: "no-head" })); return; }'
+              + '  var nm = head.querySelector(".g-name").getBoundingClientRect();'
+              + '  var rb = head.querySelector(".g-rename-btn");'
+              + '  var rr = rb ? rb.getBoundingClientRect() : null;'
+              + '  res(JSON.stringify({'
+              + '   nm: { x: nm.left + nm.width / 2, y: nm.top + nm.height / 2 },'
+              + '   rn: rr ? { x: rr.left + rr.width / 2, y: rr.top + rr.height / 2 } : null'
+              + '  }));'
+              + ' }, 450); });'
+              + '})()'));
+            out.pos = pos;
+            if (pos.error) throw new Error(pos.error);
+            const nameOf = () => wc.executeJavaScript('(MTG.state.project.groups.find(function(g){return g.id==="g-real";})||{}).name || ""');
+            /* —— 路径 A：真实双击组名 → 输入框 → 全选改名 → 回车 —— */
+            await tap(pos.nm.x, pos.nm.y, 1);
+            await tap(pos.nm.x, pos.nm.y, 2);
+            await rsleep(250);
+            out.inputAfterDblclick = await wc.executeJavaScript('!!document.querySelector("#asset-list .g-rename")');
+            out.activeIsInput = await wc.executeJavaScript('!!(document.activeElement && document.activeElement.classList && document.activeElement.classList.contains("g-rename"))');
+            if (out.inputAfterDblclick) {
+              keyTap('A', ['control']);
+              await rsleep(60);
+              typeText('realname');
+              await rsleep(80);
+              out.valueBeforeEnter = await wc.executeJavaScript('(document.querySelector("#asset-list .g-rename")||{}).value || ""');
+              keyTap('Enter');
+              await rsleep(300);
+              out.nameAfterDblclick = await nameOf();
+            }
+            /* —— 路径 B：✎ 按钮真实单击 → 输入框 → 回车 —— */
+            if (pos.rn) {
+              await tap(pos.rn.x, pos.rn.y, 1);
+              await rsleep(250);
+              out.inputAfterBtn = await wc.executeJavaScript('!!document.querySelector("#asset-list .g-rename")');
+              if (out.inputAfterBtn) {
+                keyTap('A', ['control']);
+                await rsleep(60);
+                typeText('btnname');
+                await rsleep(80);
+                keyTap('Enter');
+                await rsleep(300);
+                out.nameAfterBtn = await nameOf();
+              }
+            }
+            /* —— 路径 C：双击 → 输入 → 真实点击别处（blur 提交，不按回车）—— */
+            await tap(pos.nm.x, pos.nm.y, 1);
+            await tap(pos.nm.x, pos.nm.y, 2);
+            await rsleep(250);
+            out.inputC = await wc.executeJavaScript('!!document.querySelector("#asset-list .g-rename")');
+            if (out.inputC) {
+              keyTap('A', ['control']);
+              await rsleep(60);
+              typeText('blurname');
+              await rsleep(80);
+              await tap(800, 695, 1);                    // 真实点击标尺（不触发 render 的安全区域）
+              await rsleep(320);
+              out.nameAfterBlur = await nameOf();
+            }
+            /* —— 路径 D：双击「未分组」—— 固定分节不可改名（应给提示，而非静默无反应）—— */
+            const unPos = JSON.parse(await wc.executeJavaScript(
+              '(function(){ var h = null;'
+              + ' document.querySelectorAll("#asset-list .group-head").forEach(function(x){ if (x.classList.contains("ungrouped")) h = x; });'
+              + ' if (!h) return "null";'
+              + ' var r = h.getBoundingClientRect();'
+              + ' return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 }); })()'));
+            if (unPos && unPos.x != null) {
+              await tap(unPos.x, unPos.y, 1);
+              await tap(unPos.x, unPos.y, 2);
+              await rsleep(250);
+              out.ungroupedNoEdit = !(await wc.executeJavaScript('!!document.querySelector("#asset-list .g-rename")'));
+              out.ungroupedToast = await wc.executeJavaScript('(document.getElementById("toast")||{}).textContent || ""');
+            }
+            out.ok = !!(out.nameAfterDblclick === 'realname' && out.nameAfterBtn === 'btnname'
+              && out.nameAfterBlur === 'blurname'
+              && (out.ungroupedNoEdit === true ? /未分组/.test(out.ungroupedToast || '') : true));
+          } catch (e) { out.error = (e && e.message) || String(e); }
+          console.log('[smoke-real]', JSON.stringify(out));
+        }
         if (process.argv.includes('--smoke-brush')) {
           /* 笔刷 UI 入口随版本演进：优先旧 id，回退到笔刷清单里的第一个按钮 */
           const r = await win.webContents.executeJavaScript(
@@ -347,6 +458,33 @@ function createWindow() {
           await win.webContents.executeJavaScript('window.__fabulaSetView && window.__fabulaSetView(' + JSON.stringify(vname) + ')');
           await new Promise(r => setTimeout(r, 400));
           console.log('[smoke] view set to', vname);
+        }
+        if (process.argv.includes('--smoke-make-icon')) {
+          /* 一次性工具（--smoke-make-icon）：按顶栏 .brand-mark 的"缺角矩形"品牌形状
+             生成 build/icon.png（程序图标）。形状与 CSS clip-path 同源、颜色取 --red。
+             改 logo 形状后重跑本命令即可重新生成。 */
+          const dataUrl = await win.webContents.executeJavaScript(
+            '(function(){'
+            + ' var S = 256, pad = 18, w = S - pad * 2, h = S - pad * 2, cut = Math.round(w * 0.38);'
+            + ' var red = getComputedStyle(document.body).getPropertyValue("--red").trim() || "#eb684b";'
+            + ' var c = document.createElement("canvas"); c.width = S; c.height = S;'
+            + ' var x = c.getContext("2d");'
+            + ' x.fillStyle = red;'
+            + ' x.beginPath();'
+            + ' x.moveTo(pad, pad);'
+            + ' x.lineTo(pad + w, pad);'
+            + ' x.lineTo(pad + w, pad + h - cut);'
+            + ' x.lineTo(pad + w - cut, pad + h);'
+            + ' x.lineTo(pad, pad + h);'
+            + ' x.closePath(); x.fill();'
+            + ' return c.toDataURL("image/png");'
+            + '})()');
+          const b64 = String(dataUrl).replace(/^data:image\/png;base64,/, '');
+          const iconDir = path.join(__dirname, '..', 'build');
+          const fsI = require('node:fs');
+          fsI.mkdirSync(iconDir, { recursive: true });
+          fsI.writeFileSync(path.join(iconDir, 'icon.png'), Buffer.from(b64, 'base64'));
+          console.log('[smoke] icon written:', path.join(iconDir, 'icon.png'));
         }
         const fs = require('node:fs');
         /* --smoke-crop=x,y,w,h：区域放大截图（诊断局部排版用） */

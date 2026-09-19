@@ -30,13 +30,7 @@
       TL.el.scroll.addEventListener('wheel', e => {
         if (e.ctrlKey || e.metaKey) {
           e.preventDefault();
-          const rect = TL.el.scroll.getBoundingClientRect();
-          const x = e.clientX - rect.left + TL.el.scroll.scrollLeft;
-          const t = TL.xToTime(x);
-          const k = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-          TL.setZoom(U.clamp(MTG.state.pxPerSec * k, 8, 400));
-          const nx = TL.timeToX(t);
-          TL.el.scroll.scrollLeft = nx - (e.clientX - rect.left);
+          TL.zoomAround(e.clientX, e.deltaY < 0 ? 1.12 : 1 / 1.12);
           return;
         }
         /* R5-3：只有"横向意图"（触控板 deltaX > deltaY）或"纵向无溢出"时才转横向 ——
@@ -77,6 +71,14 @@
       /* M-3：pointercancel（笔/触屏常见）也要复位 —— 否则 scrubbing 卡在 true，
          此后不按键悬停标尺也会拖走播放头 */
       TL.el.ruler.addEventListener('pointercancel', rulerEnd);
+
+      /* 标尺上滚轮 = 时间轴缩放（PR 语义，无需 Ctrl）：以光标为锚。
+         stopPropagation：不要落到滚动容器的「滚轮横向滚动」分支 */
+      TL.el.ruler.addEventListener('wheel', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        TL.zoomAround(e.clientX, e.deltaY < 0 ? 1.12 : 1 / 1.12);
+      }, { passive: false });
 
       /* R5-2 兜底：拖拽会话的 window 级收尾。拖拽中的元素可能被 render 摘除
          （外部同步 / 窗口 resize / 分栏拖动），pointerup 永远到不了它 ——
@@ -122,6 +124,15 @@
       const z = document.getElementById('zoom');
       if (z) z.value = Math.round(pps);
       if (prev !== pps) TL.render();
+    },
+
+    /* 以视口 x 为锚缩放（标尺滚轮 / Ctrl+滚轮共用）：
+       光标处对应的时间点在缩放后仍停在光标下（PR 语义），而不是把视图甩到开头 */
+    zoomAround(clientX, k) {
+      const rect = TL.el.scroll.getBoundingClientRect();
+      const t = TL.xToTime(clientX - rect.left + TL.el.scroll.scrollLeft);
+      TL.setZoom(U.clamp(MTG.state.pxPerSec * k, 8, 400));
+      TL.el.scroll.scrollLeft = TL.timeToX(t) - (clientX - rect.left);
     },
 
     /* ── 渲染 ── */
@@ -558,7 +569,8 @@
       for (const s of steps) { if (s * pps >= 66) { step = s; break; } }
       const minor = step / (step >= 5 ? 5 : 4);
       const css = getComputedStyle(document.body);
-      const cText = css.getPropertyValue('--text-dim').trim() || '#8a857a';
+      /* 主刻度文字用 --text（对比强于 --text-dim）：毛玻璃底上也要一眼可读 */
+      const cText = css.getPropertyValue('--text').trim() || '#3d3a36';
       const cGrid = css.getPropertyValue('--grid').trim() || 'rgba(0,0,0,.2)';
 
       x.strokeStyle = cGrid;
@@ -1009,6 +1021,8 @@
       if (kind === 'audio') {
         const a = MTG.findAsset(id);
         if (!a) return;
+        /* 未归组的音频素材：上轨即归入音频轨分组（与新建帧的归组行为一致） */
+        if (a.group == null) { try { a.group = MTG.ensureTrackGroup(tr); } catch (_) {} }
         let dur = 5;
         if (MTG.storage.ready) {
           const blob = await MTG.storage.readBlob(a.path);
