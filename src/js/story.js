@@ -44,6 +44,18 @@
       if (info) info.textContent = shots.length + ' 个镜头 · 总长 ' + U.tc(shots.reduce((a, s) => a + (s.dur || 0), 0));
     },
 
+    refreshCard(shot) {
+      if (!S.active) return;
+      const box = document.getElementById('story-grid');
+      if (!box) return;
+      for (const card of box.querySelectorAll('.story-card')) {
+        if (card.dataset.id !== shot.id) continue;
+        const number = Number(card.querySelector('.sc-no').textContent);
+        card.replaceWith(S.card(shot, number));
+        break;
+      }
+    },
+
     card(shot, no) {
       const m = shot.meta || {};
       const el = document.createElement('div');
@@ -207,8 +219,8 @@
           shot.meta = shot.meta || {};
           shot.meta[f.key] = v;
           MTG.markDirty();
-          if (MTG.timeline.el.tracks) MTG.timeline.render();
-          S2.render();                              // 卡片上的摘要跟着变
+          MTG.timeline.refreshClipMeta(shot);
+          S2.refreshCard(shot);
         });
         holder.appendChild(el);
         row.appendChild(lb);

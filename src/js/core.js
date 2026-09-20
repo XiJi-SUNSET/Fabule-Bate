@@ -291,7 +291,8 @@
     layer: 'fg',
     brush: { size: 14, opacity: 100 },
     theme: localStorage.getItem('montage.theme') || 'dark',
-    dirty: false
+    dirty: false,
+    editRevision: 0
   };
 
   MTG.newProject = function (name) {
@@ -375,7 +376,10 @@
     toastTimer = setTimeout(() => { el.className = 'toast'; }, 2400);
   };
 
-  MTG.markDirty = function () { MTG.state.dirty = true; };
+  MTG.markDirty = function () {
+    MTG.state.editRevision = (MTG.state.editRevision || 0) + 1;
+    MTG.state.dirty = true;
+  };
 
   /* ── 工程查询助手 ── */
   MTG.findAsset = function (id) {

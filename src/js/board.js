@@ -48,6 +48,9 @@
   const B = (MTG.board = {
     /* ================= 数据属性 ================= */
     dirty: false,
+    revision: 0,
+    _flushPromise: null,
+    _frameBusy: 0,
     spaceDownAt: 0,
     spacePanned: false,
     refImg: null,
@@ -113,6 +116,7 @@
         UI('syncHistory');
         if (B._silent) return;
         if (!MTG.state.currentBoardId) return;
+        B.revision++;
         B.dirty = true;
         if (MTG.markDirty) MTG.markDirty();
       };
@@ -220,6 +224,7 @@
     },
     /* 空态是否拦截指针：导航类（抓手/缩放/空格平移）放行，其余拦下（不落墨） */
     _blockPaint() {
+      if (B._silent || B._frameBusy || MTG.state.switchingProject) return true;
       if (!B._idle) return false;
       if (B.spaceHeld) return false;
       const e = E();
@@ -455,10 +460,18 @@
       const want = hit ? hit.boardId : null;
       if (want === MTG.state.currentBoardId) return;
       const tk = ++B._token;
-      if (B.dirty) await B.flush();
-      if (tk !== B._token) return;
-      if (!want) { B.unload(); return; }
-      await B.loadFrame(want, tk);
+      B._frameBusy++;
+      try {
+        if (B.dirty) await B.flush();
+        if (tk !== B._token) return;
+        if (!want) { B.unload(); return; }
+        await B.loadFrame(want, tk);
+      } catch (err) {
+        if (MTG.audio && MTG.audio.playing) MTG.audio.pause();
+        const current = B.orderedBoardClips().find(c => c.boardId === MTG.state.currentBoardId);
+        if (current && MTG.setPlayhead) MTG.setPlayhead(current.start + 0.001);
+        throw err;
+      } finally { B._frameBusy--; }
     },
 
     /* 离开帧 / 帧被删除时：清空画板并复位历史 */
@@ -535,33 +548,52 @@
       img.src = url;
     },
 
-    async flush() {
+    flush() {
+      // 每个调用者先提交尚未抬笔的内容；切帧即使复用慢保存，也不能漏掉新起的一笔。
       const e = E();
-      if (e && e.commitStroke) e.commitStroke(); // 画到一半被迫存盘（切帧/退出）：先把这一笔落下
-      if (!B.dirty || !MTG.state.currentBoardId) return;
-      const b = MTG.findBoard(MTG.state.currentBoardId);
-      if (!b) return;
-      const blob = await B.toBlob();
-      if (!blob) return false;
-      try {
-        await MTG.storage.writeFile(b.path, blob);
-      } catch (err) {
-        /* 写盘失败：保留 dirty 等下一轮（autosave/切帧/退出）重试；
-           不再静默吞掉 —— 此前调用方照报"已保存"，帧文件其实没写 */
-        MTG.toast && MTG.toast('帧存盘失败，稍后重试：' + ((err && err.message) || err), true);
-        return false;
-      }
-      B.onionCache.delete(b.id);
-      B.dropThumb(b.id);                   // 内容变了，旧缩略图 URL 作废
-      /* H-12：时间轴片段缩略图重画（此前 drop 后没人重设 <img>，缩略图停在旧画面） */
-      if (MTG.timeline && MTG.timeline.refreshBoardThumb) MTG.timeline.refreshBoardThumb(b.id);
-      B.dirty = false;
-      return true;
+      if (e && e.commitStroke) e.commitStroke();
+      if (B._flushPromise) return B._flushPromise;
+      const job = (async () => {
+        while (B.dirty) {
+          const project = MTG.state.project;
+          const id = MTG.state.currentBoardId;
+          const b = MTG.findBoard(id);
+          if (!b || !MTG.storage.ready) throw new Error('当前画面没有可保存的工程位置');
+          const revision = B.revision;
+          const blob = await B.toBlob();
+          if (!blob) throw new Error('无法生成帧图，原画面已保留');
+          if (MTG.state.project !== project || MTG.state.currentBoardId !== id) {
+            throw new Error('画面已切换，已停止旧帧保存');
+          }
+          await MTG.storage.writeFile(b.path, blob);
+          if (MTG.state.project !== project || MTG.state.currentBoardId !== id) {
+            throw new Error('工程已切换，无法确认旧帧保存状态');
+          }
+          B.onionCache.delete(id);
+          B.dropThumb(id);
+          if (MTG.timeline && MTG.timeline.refreshBoardThumb) MTG.timeline.refreshBoardThumb(id);
+          if (MTG.assets && MTG.assets.refreshBoardThumb) MTG.assets.refreshBoardThumb(id);
+          if (B.revision === revision) B.dirty = false;
+        }
+        return true;
+      })();
+      B._flushPromise = job.catch(err => {
+        MTG.ui && MTG.ui.syncSave && MTG.ui.syncSave('failed');
+        MTG.toast && MTG.toast('帧保存失败，原画面已保留：' + err.message, true);
+        throw err;
+      }).finally(() => { B._flushPromise = null; });
+      return B._flushPromise;
     },
 
     dropThumb(id) {
+      B._thumbPending.delete(id); // 在途旧读取不得回填保存前的内容
       const u = B.thumbCache.get(id);
       if (u) { URL.revokeObjectURL(u); B.thumbCache.delete(id); }
+    },
+    clearThumbnails() {
+      B._thumbPending.clear();
+      B.thumbCache.forEach(u => URL.revokeObjectURL(u));
+      B.thumbCache.clear();
     },
 
     /* 取某帧的可复用对象 URL（带缓存），时间轴缩略图与分镜表画面列共用。
@@ -572,16 +604,18 @@
       if (B.thumbCache.has(b.id)) return B.thumbCache.get(b.id);
       if (!MTG.storage.ready) return null;
       if (B._thumbPending.has(b.id)) return B._thumbPending.get(b.id);
+      const project = MTG.state.project;
       const job = (async () => {
         try {
           const blob = await MTG.storage.readBlob(b.path);
+          if (MTG.state.project !== project) return null;
+          if (B._thumbPending.get(b.id) !== job) return B.thumbUrl(b);
           if (!blob) return null;
-          if (B.thumbCache.has(b.id)) return B.thumbCache.get(b.id);   // 期间已被其它路径填充：复用，不二次建 URL
           const u = URL.createObjectURL(blob);
           B.thumbCache.set(b.id, u);
           return u;
         } finally {
-          B._thumbPending.delete(b.id);
+          if (B._thumbPending.get(b.id) === job) B._thumbPending.delete(b.id);
         }
       })();
       B._thumbPending.set(b.id, job);
@@ -668,7 +702,7 @@
       if (!MTG.storage.ready) { MTG.toast('请先打开工程文件夹', true); return; }
       const p = MTG.state.project;
       if (!p) { MTG.toast('请先打开工程文件夹', true); return; }
-      await B.flush();
+      try { await B.flush(); } catch (_) { return; }
 
       // 播放头落在「空镜头」上 → 给它补画面（落透明空帧并绑定），而不是另插新行
       const hitShot = B.shotAt(MTG.state.playhead);
@@ -714,16 +748,15 @@
     async saveFrame() {
       const b = MTG.findBoard(MTG.state.currentBoardId);
       if (!b) { MTG.toast('播放头不在任何分镜帧上', true); return; }
-      const ok = await B.flush();
-      if (ok === false) return;              // 写盘失败已提示，不再谎报"已保存"
+      try { await B.flush(); } catch (_) { return; }
       MTG.markDirty();
       MTG.toast('已保存：' + b.name);
     },
 
     /* 换工程时释放所有 blob URL：旧工程的缩略图/洋葱皮缓存不再有效 */
     resetCaches() {
-      B.thumbCache.forEach(u => URL.revokeObjectURL(u));
-      B.thumbCache.clear();
+      B.clearThumbnails();
+      B._ogen++;
       B.onionCache.clear();
       B.onionLoading.clear();
       B._bc = null;

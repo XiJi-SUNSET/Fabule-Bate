@@ -3,21 +3,28 @@
    · R5：接线补全（重命名含 IME / 素材生命周期 / 导入命名 / R5-2 拖拽兜底），
      并把"能不能跑"的判定从"exe 存在"改为"electron 能产出含 [smoke-eval] 的输出" ——
      受限环境（无 GUI / ELECTRON_RUN_AS_NODE）里是 skip（可诊断），而不是硬红/ENOENT。 */
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const electron = path.join(root, 'node_modules', 'electron', 'dist', 'electron.exe');
-const logPath = path.join(root, 'smoke.log');
+const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fabula-probes-'));
+let launchNumber = 0, logPath;
+after(() => fs.rmSync(outputRoot, { recursive: true, force: true, maxRetries: 3 }));
 const hasBinary = fs.existsSync(electron);
 
 function launch(args, timeout) {
-  try { fs.rmSync(logPath, { force: true }); } catch (_) {}
-  return spawnSync(electron, args, { cwd: root, timeout: timeout || 90000, encoding: 'utf8' });
+  const dir = path.join(outputRoot, String(++launchNumber));
+  fs.mkdirSync(dir);
+  logPath = path.join(dir, 'smoke.log');
+  const env = { ...process.env, FABULA_SMOKE_ROOT: dir };
+  delete env.ELECTRON_RUN_AS_NODE;
+  return spawnSync(electron, args, { cwd: root, env, timeout: timeout || 45000, encoding: 'utf8' });
 }
 
 /* 从 stdout/stderr/smoke.log 三源里取 [smoke-eval] 行（R5 §4：此前只读文件，
@@ -31,18 +38,8 @@ function grabEval(extra) {
   return line ? line.slice(line.indexOf('[smoke-eval]') + '[smoke-eval]'.length) : null;
 }
 
-/* 可用性探测：electron 能启动并产出 [smoke-eval] 才跑探针用例 */
-const probeOK = hasBinary && (() => {
-  try {
-    const r = launch(['.', '--smoke', '--smoke-eval="probe-ok"'], 60000);
-    return grabEval(String(r.stdout || '') + '\n' + String(r.stderr || '')) != null;
-  } catch (_) { return false; }
-})();
-const skip = probeOK
-  ? false
-  : (hasBinary
-    ? 'Electron 无法产出 smoke-eval 输出（无 GUI / ELECTRON_RUN_AS_NODE？）—— 跳过探针'
-    : '未安装 electron 二进制 —— 跳过探针');
+/* 缺二进制才跳过；启动后无输出属于测试失败，不再把真实回归吞成 skip。 */
+const skip = hasBinary ? false : '未安装 Electron 二进制';
 
 function runProbe(expr) {
   const r = launch(['.', '--smoke', '--smoke-play', '--smoke-eval=' + expr]);
@@ -137,4 +134,13 @@ test('探针回归：拖拽兜底（dragGuardProbe · R5-2）', { skip }, () => 
   assert.equal(o.clearedByRender, true, 'render 摘除被拖元素时 dragging 必须当场复位');
   assert.equal(o.clearedByWindowUp, true, 'window 级 pointerup 必须兜底复位');
   assert.equal(o.clearedByWindowCancel, true, 'window 级 pointercancel 必须兜底复位');
+});
+
+test('探针回归：保存失败保护、缩略图、局部刷新与镜头换位', { skip }, () => {
+  const expr = fs.readFileSync(new URL('./fixtures/reliability-probe.js', import.meta.url), 'utf8');
+  const result = runProbe(expr);
+  assert.ok(!result.error, result.error);
+  for (const key of ['saveRejected','failedIndicator','switchRejected','canvasKept','recovered','thumbnailUpdated','incrementalMeta','reorderAnchored','diskCorrect']) {
+    assert.equal(result[key],true,key);
+  }
 });

@@ -456,6 +456,17 @@
       return el;
     },
 
+    /* 元数据变化只更新对应标签，不重建轨道或音频波形。 */
+    refreshClipMeta(clip) {
+      if (!TL.el.tracks) return;
+      TL.el.tracks.querySelectorAll('.clip').forEach(el => {
+        if (el.dataset.id !== clip.id) return;
+        const label = el.querySelector('.clip-label');
+        if (label) label.textContent = TL.clipLabel(clip);
+        el.title = TL.clipTip(clip);
+      });
+    },
+
     /* H-12：某帧内容被重写（存帧/外部换图）后，把时间轴上引用它的片段缩略图重画。
        此前 flush 里 dropThumb 清了缓存，但没人重设 <img src> —— 缩略图停在旧画面 */
     refreshBoardThumb(bid) {
@@ -473,6 +484,8 @@
     },
 
     async fillThumb(img, c) {
+      const project = MTG.state.project;
+      const token = img._thumbToken = (img._thumbToken || 0) + 1;
       let url = null;
       if (c.kind === 'board' && c.boardId) {
         const b = MTG.findBoard(c.boardId);
@@ -487,6 +500,7 @@
           }
         }
       }
+      if (MTG.state.project !== project || img._thumbToken !== token) return;
       if (url) img.src = url;
       else if (img) img.classList.add('thumb-miss');   // 读不到就留个占位，不显示破图
     },

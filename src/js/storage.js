@@ -20,6 +20,7 @@
     mode: 'none',        // 'fsa'（浏览器）| 'electron'（桌面）| 'none'
     root: null,          // FileSystemDirectoryHandle（仅 fsa 模式）
     dirName: '',
+    desktopRoot: null,
 
     get ready() { return S.mode === 'fsa' || S.mode === 'electron'; },
 
@@ -31,20 +32,16 @@
       finally { picking = false; }
     },
 
-    /* 桌面：主进程弹目录对话框（已有 fabula.json 直开，否则询问后创建） */
+    /* 候选先解析和迁移，再提交主进程目录；失败时旧工程仍然活动。 */
     async _openDesktop() {
-      let snap = null;
-      try {
-        snap = await FN().openDialog();
-      } catch (err) {
-        /* 主进程拒绝（含"工程版本过新"L-16）：把原因说清楚，别让 promise 悬空报 unhandled */
-        MTG.toast('打开工程失败：' + ((err && err.message) || err), true);
-        return null;
-      }
-      if (!snap || !snap.root) return null;
-      S.mode = 'electron';
-      S.dirName = snap.root.split(/[\\/]/).filter(Boolean).pop() || '';
-      return 'electron';
+      const candidate = await FN().openDialog();
+      if (!candidate) return null;
+      const name = candidate.root.split(/[\\/]/).filter(Boolean).pop() || '';
+      const project = candidate.montageText === null ? MTG.newProject(name) : S.decodeProject(candidate.montageText);
+      MTG.migrateProject(project);
+      await FN().commitOpen(candidate.token, JSON.stringify(project, null, 2));
+      S.mode = 'electron'; S.desktopRoot = candidate.root; S.dirName = name;
+      return { project, created: candidate.montageText === null };
     },
 
     /* 浏览器：File System Access API */
@@ -67,8 +64,19 @@
       if (st === 'prompt') st = await h.requestPermission(opt).catch(() => 'denied');
       if (st !== 'granted') { MTG.toast('未获得文件夹读写权限', true); return null; }
 
+      let text = null;
+      try { text = await (await (await h.getFileHandle(MTG.PROJECT_FILE)).getFile()).text(); }
+      catch (err) { if (err.name !== 'NotFoundError') throw err; }
+      const project = text === null ? MTG.newProject(h.name) : S.decodeProject(text);
+      MTG.migrateProject(project);
+      if (text === null) {
+        const fh = await h.getFileHandle(MTG.PROJECT_FILE, { create: true });
+        const writer = await fh.createWritable();
+        try { await writer.write(JSON.stringify(project, null, 2)); await writer.close(); }
+        catch (err) { try { await writer.abort(); } catch (_) {} throw err; }
+      }
       S.root = h; S.mode = 'fsa'; S.dirName = h.name;
-      return 'fsa';
+      return { project, created: text === null };
     },
 
     /* ── 文件接口 ── */
@@ -89,8 +97,9 @@
     },
     async writeFile(path, blob) {
       if (S.mode === 'electron') {
+        const expectedRoot = S.desktopRoot;
         const bytes = new Uint8Array(await blob.arrayBuffer());
-        await FN().writeFile(path, bytes);
+        await FN().writeFile(path, bytes, expectedRoot);
         return path;
       }
       const fh = await getFileHandle(path, true);
@@ -141,17 +150,17 @@
     },
 
     /* ── 工程读写 ── */
+    decodeProject(text) {
+      const json = MTG.projectFormat.parse(text);
+      if (!json.tracks) json.tracks = MTG.newProject().tracks;
+      for (const key of ['groups', 'assets', 'boards', 'clips']) json[key] = json[key] || [];
+      return json;
+    },
     async loadProject() {
       const blob = await S.readBlob(MTG.PROJECT_FILE);
       if (!blob) return null;
       try {
-        const json = JSON.parse(await blob.text());
-        if (!json.tracks) json.tracks = MTG.newProject().tracks;
-        json.groups = json.groups || [];
-        json.assets = json.assets || [];
-        json.boards = json.boards || [];
-        json.clips = json.clips || [];
-        return json;
+        return S.decodeProject(await blob.text());
       } catch (e) {
         MTG.toast('工程文件解析失败：' + e.message, true);
         /* 抛出带标记的错误：调用方据此中止打开，避免把"解析失败"当成
@@ -162,6 +171,7 @@
       }
     },
     async saveProject(proj) {
+      const revision = MTG.state.editRevision || 0;
       const json = JSON.stringify(proj, null, 2);
       const blob = () => new Blob([json], { type: 'application/json' });
       try {
@@ -173,7 +183,9 @@
         await new Promise(r => setTimeout(r, 800));
         await S.writeFile(MTG.PROJECT_FILE, blob());
       }
-      MTG.state.dirty = false;
+      if (MTG.state.project === proj && (MTG.state.editRevision || 0) === revision) {
+        MTG.state.dirty = false;
+      }
     },
 
     /* 平台能力描述，用于顶栏标签 */

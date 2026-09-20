@@ -485,6 +485,7 @@
     },
 
     async thumb(it) {
+      if (it.kind === 'board' || it.type === 'board') return MTG.board.thumbUrl(it);
       if (A.urlCache.has(it.id)) return A.urlCache.get(it.id);
       if (!MTG.storage.ready) return null;
       const blob = await MTG.storage.readBlob(it.path);
@@ -492,6 +493,25 @@
       const u = URL.createObjectURL(blob);
       A.urlCache.set(it.id, u);
       return u;
+    },
+
+    async refreshBoardThumb(id) {
+      const project = MTG.state.project;
+      const board = MTG.findBoard(id);
+      if (!board) return;
+      const url = await MTG.board.thumbUrl(board);
+      if (!url || MTG.state.project !== project) return;
+      const box = document.getElementById('asset-list');
+      if (!box) return;
+      box.querySelectorAll('.asset-item').forEach(el => {
+        if (el.dataset.key !== 'board:' + id) return;
+        const holder = el.querySelector('.asset-thumb');
+        if (!holder) return;
+        let img = holder.querySelector('img');
+        if (!img) { holder.textContent = ''; img = document.createElement('img'); holder.appendChild(img); }
+        img.draggable = false;
+        img.src = url;
+      });
     },
 
     /* 换工程（或素材被移除）时释放 blob URL，避免旧内存常驻 */

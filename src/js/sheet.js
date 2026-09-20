@@ -188,6 +188,9 @@
       const srcTrackId = shot.trackId;
       const arr = MTG.board.orderedShots().filter(s => s.trackId === over.trackId);
       if (!arr.length) return;
+      const targetStart = arr[0].start;
+      const source = MTG.board.orderedShots().filter(s => s.trackId === srcTrackId);
+      const sourceStart = source.length ? source[0].start : 0;
       const from = arr.indexOf(shot);
       let to = arr.indexOf(over) + (below ? 1 : 0);
       if (from >= 0 && from < to) to--;
@@ -195,12 +198,12 @@
       if (from >= 0) arr.splice(from, 1);
       arr.splice(Math.max(0, Math.min(to, arr.length)), 0, shot);
       shot.trackId = over.trackId;                 // 允许拖到别的分镜轨
-      let acc = arr[0].start;
+      let acc = targetStart;
       arr.forEach(s => { s.start = acc; acc += s.dur; });
       /* R5-16：跨轨拖走后在源轨留下"洞" —— 源轨重新首尾相接（与目标轨同一规则） */
       if (srcTrackId !== over.trackId) {
-        const src = MTG.board.orderedShots().filter(s => s.trackId === srcTrackId);
-        if (src.length) { let a2 = src[0].start; src.forEach(s => { s.start = a2; a2 += s.dur; }); }
+        const src = source.filter(s => s !== shot);
+        if (src.length) { let a2 = sourceStart; src.forEach(s => { s.start = a2; a2 += s.dur; }); }
       }
       MTG.markDirty();
       MTG.render();
@@ -331,7 +334,7 @@
       shot.meta = shot.meta || {};
       shot.meta[key] = val;
       MTG.markDirty();
-      if (MTG.timeline.el.tracks) MTG.timeline.render();
+      MTG.timeline.refreshClipMeta(shot);
     },
 
     select(shot) {
@@ -444,9 +447,10 @@
         MTG.toast('已在镜头序列最' + (dir < 0 ? '前' : '后') + '端', true);
         return;
       }
+      const trackStart = trShots[0].start;
       trShots.splice(i, 1);
       trShots.splice(j, 0, c);
-      let acc = trShots[0].start;
+      let acc = trackStart;
       trShots.forEach(s => { s.start = acc; acc += s.dur; });
       MTG.markDirty();
       MTG.render();
@@ -487,6 +491,8 @@
         S.pmShot = shot;
         /* 画板面板搬进弹窗后舞台尺寸骤变：先让引擎重建画布分辨率再适配（H-8） */
         requestAnimationFrame(() => { window.dispatchEvent(new Event('resize')); MTG.board.fitView(); });
+      } catch (err) {
+        MTG.toast('未打开绘画窗口，当前画面已保留：' + err.message, true);
       } finally {
         S._pmBusy = false;
       }
@@ -497,9 +503,9 @@
       const panel = document.getElementById('panel-board');
       const modal = document.getElementById('paint-modal');
       if (save) {
-        const ok = await B.flush();
-        if (ok === false) {                             // 写盘失败：别关窗谎报成功（N-B6）
-          MTG.toast('存帧失败，未关闭 —— 检查磁盘后重试', true);
+        try { await B.flush(); }
+        catch (err) {
+          MTG.toast('存帧失败，绘画窗口已保留：' + err.message, true);
           return;
         }
       } else {

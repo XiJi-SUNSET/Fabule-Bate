@@ -2,10 +2,17 @@
 const { app, BrowserWindow, protocol, net, ipcMain, dialog, shell } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const store = require('./projectStore.js');
 
-/* 冒烟模式全局标志（自定义协议/单实例锁/关窗握手等都要区分） */
 const SMOKE = process.argv.some((a) => a === '--smoke' || a.startsWith('--smoke-'));
+// 冒烟进程拥有独立配置、工程指针和输出，不能改动日常使用的用户目录。
+const SMOKE_ROOT = SMOKE ? (process.env.FABULA_SMOKE_ROOT || require('node:fs').mkdtempSync(
+  path.join(require('node:os').tmpdir(), 'fabula-smoke-'))) : null;
+if (SMOKE) {
+  process.env.FABULA_SMOKE_ROOT = SMOKE_ROOT;
+  require('node:fs').mkdirSync(SMOKE_ROOT, { recursive: true });
+  app.setPath('userData', path.join(SMOKE_ROOT, 'user-data'));
+}
+const store = require('./projectStore.js');
 
 /* 冒烟日志落盘（提到启动链路最前面）：Windows GUI 进程的 stdout 在终端拿不到
    （console.log 静默丢失），冒烟模式下把 console 输出镜像到 smoke.log。
@@ -13,7 +20,7 @@ const SMOKE = process.argv.some((a) => a === '--smoke' || a.startsWith('--smoke-
    故障变成"完全空白"，无从诊断（R5 附录踩到过）。 */
 if (SMOKE) {
   const fsx = require('node:fs');
-  const LOG = path.join(__dirname, '..', 'smoke.log');
+  const LOG = path.join(SMOKE_ROOT, 'smoke.log');
   try { fsx.writeFileSync(LOG, ''); } catch (_) {}
   const mirror = (fn) => (...a) => {
     const line = a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ') + '\n';
@@ -151,17 +158,16 @@ async function serveProjectFile(u, req) {
   return resp;
 }
 
-/* 关窗握手（H-5）：主进程拦下 close → 广播让渲染端 flush 未存数据 → 渲染端回
-   app:close-ready 才真正关闭。3 秒兜底防止渲染端卡死导致窗口关不掉。 */
-let closeReady = false;
-ipcMain.handle('app:close-ready', (e) => {
-  closeReady = true;
+/* 每个窗口独立的保存握手；慢保存不能通过超时自动丢弃。 */
+const createCloseGuard = require('./closeGuard.cjs');
+const closeGuards = new WeakMap();
+ipcMain.handle('app:close-ready', (e, requestId, error) => {
   const w = BrowserWindow.fromWebContents(e.sender);
-  if (w && !w.isDestroyed()) w.close();
+  const guard = w && closeGuards.get(w);
+  return guard ? guard.complete(requestId, error) : false;
 });
 
 function createWindow() {
-  closeReady = false;
   const sizeArg = (process.argv.find(a => a.startsWith('--smoke-size=')) || '').slice(13);
   const [winW, winH] = sizeArg ? sizeArg.split('x').map(Number) : [1600, 950];
   const win = new BrowserWindow({
@@ -208,17 +214,27 @@ function createWindow() {
       console.log('[page-warn]', message);
     }
   });
-  win.on('close', (e) => {
-    if (closeReady || SMOKE) return;                 // 冒烟走 app.exit，不参与握手
-    e.preventDefault();
-    try { win.webContents.send('app:before-close'); } catch (_) {}
-    setTimeout(() => {
-      if (!closeReady && !win.isDestroyed()) {       // 兜底：flush 卡住也不能关不掉
-        closeReady = true;
-        win.destroy();
-      }
-    }, 3000);
+  const guard = createCloseGuard({
+    save: id => win.webContents.send('app:before-close', id),
+    close: () => { if (!win.isDestroyed()) win.close(); },
+    cancel: id => { if (!win.isDestroyed()) win.webContents.send('app:close-cancelled', id); },
+    failed: error => dialog.showMessageBox(win, {
+      type: 'error', message: '保存失败，窗口已保留', detail: String(error), buttons: ['返回工程']
+    }).catch(() => {}),
+    async ask() {
+      const answer = await dialog.showMessageBox(win, {
+        type: 'warning', message: '工程仍在保存',
+        detail: '可以继续等待或取消关闭。选择放弃会丢失尚未写入的改动。',
+        buttons: ['继续等待', '取消关闭', '放弃未保存改动并关闭'], defaultId: 0, cancelId: 1
+      });
+      return ['wait', 'cancel', 'discard'][answer.response] || 'cancel';
+    }
   });
+  closeGuards.set(win, guard);
+  win.on('close', e => {
+    if (!SMOKE && guard.request()) e.preventDefault();
+  });
+  win.on('closed', () => guard.dispose());
   win.loadURL('fabula://app/index.html');
   store.attachWindow(win);
   if (SMOKE) {
@@ -226,7 +242,7 @@ function createWindow() {
     if (playDemo) {
       const fs = require('node:fs');
       const os = require('node:os');
-      const demoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fabula-demo-'));
+      const demoDir = fs.mkdtempSync(path.join(SMOKE_ROOT, 'demo-'));
       const dirUrl = demoDir.split(path.sep).join('/');
       /* 一张演示参考图（1×1 渐变 PNG 另存演示像素图：这里生成 64×36 的色块便于辨识） */
       const demoPng = path.join(demoDir, 'ref-strip.png');
@@ -288,7 +304,7 @@ function createWindow() {
         if (process.argv.includes('--smoke-export')) {
           const fs2 = require('node:fs');
           const os2 = require('node:os');
-          const dir = fs2.mkdtempSync(path.join(os2.tmpdir(), 'fabula-exp-'));
+          const dir = fs2.mkdtempSync(path.join(SMOKE_ROOT, 'export-'));
           const dirU = dir.split(path.sep).join('/');
           const r = await win.webContents.executeJavaScript(
             '(async function(){ var f = window.fabula.exp; var x = window.__fabulaExport; var out = {};'
@@ -310,7 +326,7 @@ function createWindow() {
         const evalArg = (process.argv.find(a => a.startsWith('--smoke-eval=')) || '').slice(13);
         if (evalArg) {
           /* 给 eval 代码一个空白临时工程目录（探针自建工程用，避免污染 demo 目录） */
-          const evalDir = require('node:fs').mkdtempSync(path.join(require('node:os').tmpdir(), 'fabula-eval-'));
+          const evalDir = require('node:fs').mkdtempSync(path.join(SMOKE_ROOT, 'eval-'));
           await win.webContents.executeJavaScript(
             'window.__fabulaSmokeDir = ' + JSON.stringify(evalDir.split(path.sep).join('/')));
           const r = await win.webContents.executeJavaScript(evalArg);
@@ -496,7 +512,7 @@ function createWindow() {
           })()
           : undefined;
         const img = await win.webContents.capturePage(rect);
-        fs.writeFileSync(path.join(__dirname, '..', cropArg ? 'smoke-crop.png' : 'smoke-shot.png'), img.toPNG());
+        fs.writeFileSync(path.join(SMOKE_ROOT, cropArg ? 'smoke-crop.png' : 'smoke-shot.png'), img.toPNG());
         console.log('[smoke] screenshot saved');
       } catch (e) { console.error('[smoke] capture failed:', e.message); }
       console.log('[smoke] window alive, exiting 0');
@@ -511,27 +527,33 @@ ipcMain.handle('project:create', (_e, dirPath, name) => {
   if (!isApprovedPath(approvedDirs, dirPath)) throw new Error('仅接受经系统对话框选择的目录（M-10）');
   return store.createProject(dirPath, name);
 });
-ipcMain.handle('project:openDialog', async () => {
-  const r = await dialog.showOpenDialog({ title: '打开 / 新建工程文件夹', properties: ['openDirectory'] });
+const projectSession = require('./projectSession.cjs');
+const pendingProjects = new Map();
+ipcMain.handle('project:openDialog', async (event) => {
+  pendingProjects.delete(event.sender.id);
+  const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+    title: '打开 / 新建工程文件夹', properties: ['openDirectory']
+  });
   if (r.canceled || !r.filePaths.length) return null;
   const dir = r.filePaths[0];
-  approvePath(approvedDirs, dir);        // 登记：本会话允许对该目录做 create/openDir（M-10）
-  /* IDE 语义：任意文件夹都可作为工作区。
-     已有 fabula.json → 直开（损坏时把错误抛回渲染端提示）；
-     没有 → 询问后在此创建新工程（不改动已有文件，只增 fabula.json 与 shots/）。 */
-  if (require('node:fs').existsSync(path.join(dir, 'fabula.json'))) {
-    return store.openDir(dir);
+  approvePath(approvedDirs, dir);
+  const candidate = projectSession.prepare(dir); // 校验失败时不切换活动 root
+  if (candidate.auxiliaryText === null) {
+    const m = await dialog.showMessageBox(BrowserWindow.fromWebContents(event.sender), {
+      type: 'question', buttons: ['在此创建工程', '取消'], defaultId: 0, cancelId: 1,
+      message: '该文件夹还不是 Fabula 工程', detail: dir + '\n将创建工程描述文件，已有素材会保留。'
+    });
+    if (m.response !== 0) return null;
   }
-  const m = await dialog.showMessageBox({
-    type: 'question',
-    buttons: ['在此创建工程', '取消'],
-    defaultId: 0,
-    cancelId: 1,
-    message: '该文件夹还不是 Fabula 工程',
-    detail: dir + '\n\n是否在此创建新工程？（将写入 fabula.json 与 shots/ 目录，不改动已有文件）',
-  });
-  if (m.response !== 0) return null;
-  return store.createProject(dir, path.basename(dir));
+  const token = require('node:crypto').randomUUID();
+  pendingProjects.set(event.sender.id, { token, candidate });
+  return { token, root: candidate.root, montageText: candidate.montageText };
+});
+ipcMain.handle('project:commitOpen', (event, token, initialText) => {
+  const pending = pendingProjects.get(event.sender.id);
+  if (!pending || pending.token !== token) throw new Error('工程选择已失效，请重新打开');
+  pendingProjects.delete(event.sender.id);
+  return projectSession.commit(pending.candidate, initialText, store);
 });
 ipcMain.handle('project:openDir', (_e, dirPath) => {
   if (!isApprovedPath(approvedDirs, dirPath)) throw new Error('仅接受经系统对话框选择的目录（M-10）');
@@ -545,9 +567,12 @@ ipcMain.handle('project:writeShotImage', (_e, shotId, dataUrl) => store.writeSho
 
 /* 渲染端存储后端（Electron 桌面模式）：浏览器侧用 FSA 句柄，桌面侧走这几条 IPC。
    相对路径一律经 safeMappedFile 白名单映射，越界拒绝。 */
-ipcMain.handle('project:writeFile', (_e, rel, bytes) => {
+ipcMain.handle('project:writeFile', (_e, rel, bytes, expectedRoot) => {
   const cur = store.current();
   if (!cur.root) throw new Error('未打开工程');
+  if (expectedRoot && path.resolve(expectedRoot) !== path.resolve(cur.root)) {
+    throw new Error('工程目录已切换，已拒绝旧工程写入');
+  }
   const r = String(rel || '');
   const abs = safeMappedFile(cur.root, r);
   if (!abs) throw new Error('路径越界');

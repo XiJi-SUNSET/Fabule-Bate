@@ -115,6 +115,11 @@ test('fabula.json 外部变更：sources 含 fabula（且不误报 montage）', 
   const last = events.at(-1);
   assert.ok(last.sources.includes('fabula'));
   assert.ok(!last.sources.includes('montage'), 'montage 未变不应出现在 sources');
+  assert.equal(store.current().project.name, 'moved', '重载必须应用解析后的对象');
+  assert.equal(store.current().project.shots.length, 1);
+  assert.equal(store.current().project.shots[0].duration, 2);
+  store.__test.notifyChanged();
+  assert.equal(events.at(-1).external, false, '正确内容应在下一次检测中收敛');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

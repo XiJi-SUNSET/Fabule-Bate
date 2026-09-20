@@ -5,7 +5,10 @@ const path = require('node:path');
 const os = require('node:os');
 const { newProjectModel, normalizeProject, sanitizeShot, sanitizeAsset, genAssetId, SHOT_ID_RE } = require('./projectModel.cjs');
 
-const PTR_FILE = path.join(os.homedir(), '.fabula', 'current-project.json');
+const smokeMode = process.argv.some(a => a === '--smoke' || a.startsWith('--smoke-'));
+const PTR_FILE = smokeMode && process.env.FABULA_SMOKE_ROOT
+  ? path.join(process.env.FABULA_SMOKE_ROOT, 'current-project.json')
+  : path.join(os.homedir(), '.fabula', 'current-project.json');
 
 const state = {
   win: null,          // BrowserWindow（watch 通知用）
@@ -206,20 +209,22 @@ function notifyChanged() {
   const sources = [];
   /* fabula.json（主进程/MCP 旧链路 + 冒烟自检模型） */
   let fabulaChanged = false;
+  let diskProject = null;
   try {
     const disk = JSON.parse(fs.readFileSync(path.join(state.root, 'fabula.json'), 'utf8'));
     /* 口径对称比较（M-6 加强）：磁盘与内存**都**过 normalizeProject 再比。
        只比 lastJson 在"内存模型与规范化结果不一致"时会永久错位、持续误报
        （实例：中文名素材写盘后被旧路径规则丢弃 → 每次保存都弹"外部更新"）；
        与"当前内存模型归一化后"相同也视为自己人（自写产生的等效态）。 */
-    const diskNorm = JSON.stringify(normalizeProject(disk), null, 2);
+    diskProject = normalizeProject(disk);
+    const diskNorm = JSON.stringify(diskProject, null, 2);
     let memNorm = '';
     try { memNorm = state.project ? JSON.stringify(normalizeProject(state.project), null, 2) : ''; } catch (_) {}
     fabulaChanged = diskNorm !== state.lastJson && diskNorm !== memNorm;
   } catch (_) { fabulaChanged = false; }   // JSON 正被写一半（tmp rename 原子性保证不会读到半截；读不到就不误报）
   if (fabulaChanged) {
     sources.push('fabula');
-    try { state.project = normalizeProject(fs.readFileSync(path.join(state.root, 'fabula.json'), 'utf8')); } catch (_) {}
+    state.project = diskProject;
     try { state.lastJson = JSON.stringify(state.project, null, 2); } catch (_) {}
   }
   /* montage.json（UI + Agent 的工程真相，H-2）：与"最后一次已知文本"比较。

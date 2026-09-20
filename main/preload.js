@@ -7,18 +7,20 @@ contextBridge.exposeInMainWorld('fabula', {
   app: {
     /* 关窗前主进程先广播：渲染端 flush 完未存数据后调 closeReady() 放行（H-5） */
     onBeforeClose: (cb) => {
-      ipcRenderer.on('app:before-close', () => cb());
+      ipcRenderer.on('app:before-close', (_e, requestId) => cb(requestId));
     },
-    closeReady: () => ipcRenderer.invoke('app:close-ready')
+    onCloseCancelled: cb => ipcRenderer.on('app:close-cancelled', (_e, requestId) => cb(requestId)),
+    closeReady: (requestId, error) => ipcRenderer.invoke('app:close-ready', requestId, error)
   },
   project: {
     create: (dirPath, name) => ipcRenderer.invoke('project:create', dirPath, name),
     openDialog: () => ipcRenderer.invoke('project:openDialog'),
+    commitOpen: (token, initialText) => ipcRenderer.invoke('project:commitOpen', token, initialText),
     openDir: (dirPath) => ipcRenderer.invoke('project:openDir', dirPath),
     current: () => ipcRenderer.invoke('project:current'),
     writeShotImage: (shotId, dataUrl) => ipcRenderer.invoke('project:writeShotImage', shotId, dataUrl),
     /* 桌面存储后端（storage.js 的 electron 模式用）：相对工程根的读写 */
-    writeFile: (rel, bytes) => ipcRenderer.invoke('project:writeFile', rel, bytes),
+    writeFile: (rel, bytes, expectedRoot) => ipcRenderer.invoke('project:writeFile', rel, bytes, expectedRoot),
     deleteFile: (rel) => ipcRenderer.invoke('project:deleteFile', rel),
     /* 删除素材/帧图的默认通道：移入系统回收站（可用时） */
     trashFile: (rel) => ipcRenderer.invoke('project:trashFile', rel),
