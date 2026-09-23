@@ -10,7 +10,8 @@
     "test": "node --test \"test/*.test.mjs\"",
     "mcp": "node agent/mcp-server.mjs",
     "icon": "node tools/make-icon.mjs",
-    "shortcut": "powershell -ExecutionPolicy Bypass -File tools/make-shortcut.ps1"
+    "shortcut": "powershell -ExecutionPolicy Bypass -File tools/make-shortcut.ps1",
+    "refresh-icons": "powershell -ExecutionPolicy Bypass -File tools/refresh-icons.ps1"
   },
   "devDependencies": {
     "electron": "^33.4.11"

@@ -28,7 +28,9 @@ for (let y = 0; y < S; y++) {
     let r = 0, g = 0, b = 0, a = 0;
     for (let sy = 0; sy < SS; sy++) {
       for (let sx = 0; sx < SS; sx++) {
-        const [sr, sg, sb, sa] = sample(x * SS + sx + 0.5, y * SS + sy + 0.5);
+        /* 采样点归一化回 0..S 坐标系再进 sample —— 形状按 0..S 定义，
+           直接传超采样坐标（0..S*SS）会把图形压到画布左上 1/4。 */
+        const [sr, sg, sb, sa] = sample(x + (sx + 0.5) / SS, y + (sy + 0.5) / SS);
         r += sr * sa; g += sg * sa; b += sb * sa; a += sa;
       }
     }

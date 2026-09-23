@@ -15,6 +15,8 @@ $targets = @(
   (Join-Path ([Environment]::GetFolderPath('Programs')) 'Fabula.lnk')
 )
 foreach ($lnkPath in $targets) {
+  # 先删后建：覆盖保存有时会沿用旧图标的 shell 缓存，重建能立即重读 IconLocation
+  if (Test-Path $lnkPath) { Remove-Item $lnkPath -Force }
   $lnk = $shell.CreateShortcut($lnkPath)
   $lnk.TargetPath       = $exe
   $lnk.Arguments        = '"' + $root + '"'
@@ -25,3 +27,4 @@ foreach ($lnkPath in $targets) {
   Write-Host "created: $lnkPath"
 }
 Write-Host 'Done. Right-click Fabula on Desktop -> Pin to taskbar.'
+Write-Host 'If an already-pinned taskbar icon still shows the old art, run: npm run refresh-icons'
