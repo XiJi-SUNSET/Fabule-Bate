@@ -8,23 +8,17 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const S = 256, SS = 2, W = S * SS;
 
-/* 圆角矩形距离场：点到矩形最近边角的距离 - 半径（负=内部） */
-function rr(x, y, w, h, r, px, py) {
-  const cx = Math.max(x + r, Math.min(px, x + w - r));
-  const cy = Math.max(y + r, Math.min(py, y + h - r));
-  return Math.hypot(px - cx, py - cy) - r;
-}
-
-/* 形状表：红底 + 白 F（竖笔/上横/中横，圆角并集） */
-const RED = [235, 104, 75], WHITE = [255, 250, 244];
+/* 形状 = 顶栏左上角 .brand-mark 的逐像素复刻：
+   品牌红方块 + 右下"构成主义斜切"，clip-path(0 0, 100% 0, 100% 62%, 62% 100%, 0 100%)。
+   归一化：绘制区 6..250（244px，留边距），斜切点 y=6+0.62*244=157.28、x 对称；
+   斜线方程 x+y = 250+157.28 = 407.28，点在内侧即保留。 */
+const RED = [235, 104, 75];
+const X0 = 6, X1 = 250, CUTSUM = 407.28;
 function sample(px, py) {
-  let r = 0, g = 0, b = 0, a = 0;
-  const put = (col, al) => { r = col[0]; g = col[1]; b = col[2]; a = al; };
-  if (rr(6, 6, 244, 244, 56, px, py) <= 0) put(RED, 1);
-  if (rr(86, 60, 34, 136, 12, px, py) <= 0
-    || rr(86, 60, 92, 34, 12, px, py) <= 0
-    || rr(86, 127, 76, 34, 12, px, py) <= 0) put(WHITE, 1);
-  return [r, g, b, a];
+  if (px >= X0 && px <= X1 && py >= X0 && py <= X1 && px + py <= CUTSUM) {
+    return [RED[0], RED[1], RED[2], 1];
+  }
+  return [0, 0, 0, 0];
 }
 
 /* 超采样并降采样为 RGBA 像素 */
