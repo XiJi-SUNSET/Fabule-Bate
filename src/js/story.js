@@ -363,26 +363,43 @@
             }
           } catch (_) {}
         }
-        const text = [m.content, m.dialogue, m.remark].filter(Boolean).join('　');
-        /* R5-10：文字开关与列数同样必须与所见一致 */
+        /* 打印版式：字段 label/value 分栏（不再把内容/对白拼成一坨），空字段不占位 */
+        const FIELDS = [
+          ['画面内容', m.content], ['对白', m.dialogue], ['音效', m.sfx],
+          ['景别', m.size], ['运镜', m.move], ['焦段', m.lens],
+          ['转场', m.trans], ['备注', m.remark]
+        ].filter(([, v]) => v != null && String(v).trim() !== '');
+        const rowsHtml = FIELDS.map(([k, v]) =>
+          '<tr><th>' + k + '</th><td>' + esc(v) + '</td></tr>').join('');
         tiles.push('<figure class="tile">'
           + (du ? '<img src="' + du + '" alt="">' : '<div class="ph">（空镜）</div>')
-          + (S.showText ? '<figcaption><b>' + (i + 1) + '</b>' + esc(text) + '</figcaption>' : '')
+          + (S.showText
+            ? '<figcaption><div class="cap-hd"><span>镜 ' + (i + 1) + '</span>'
+              + '<span class="dur">' + (s.dur ? (+s.dur).toFixed(1) + 's' : '') + '</span></div>'
+              + (rowsHtml ? '<table>' + rowsHtml + '</table>' : '<div class="blank">（无描述）</div>')
+              + '</figcaption>'
+            : '')
           + '</figure>');
       }
-      const { perRow: htmlPerRow } = S._exportMetrics();
+      /* PDF 是打印物：固定每行 2 卡（宽松可读），不再跟随屏上格子档位。
+         PNG 长图（buildPng）保持"所见即所得"的列数语义。 */
       return '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
         + '<title>' + esc(p.name || '故事板') + '</title>'
         + '<style>'
-        + 'body{margin:0;padding:12mm;background:#fff;color:#16151c;font:13px/1.5 system-ui,"Microsoft YaHei",sans-serif}'
-        + 'h1{font-size:18px;margin:0 0 3mm}'
-        + '.meta{color:#888;font-size:11px;margin:0 0 5mm}'
-        + '.grid{display:grid;grid-template-columns:repeat(' + htmlPerRow + ',1fr);gap:5mm}'
-        + '.tile{margin:0;border:1px solid #ddd;border-radius:3px;overflow:hidden;page-break-inside:avoid}'
-        + '.tile img{display:block;width:100%;background:#fff}'
-        + '.tile .ph{height:38mm;display:flex;align-items:center;justify-content:center;color:#aaa}'
-        + 'figcaption{padding:2mm;font-size:11px;color:#444}'
-        + 'figcaption b{color:#d33}'
+        + 'body{margin:0;padding:16mm 14mm;background:#fff;color:#16151c;font:13px/1.65 system-ui,"Microsoft YaHei",sans-serif}'
+        + 'h1{font-size:20px;margin:0 0 2mm}'
+        + '.meta{color:#8a857a;font-size:11.5px;margin:0 0 7mm}'
+        + '.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:7mm}'
+        + '.tile{margin:0;border:1px solid #d9d5cf;border-radius:4px;overflow:hidden;page-break-inside:avoid;break-inside:avoid}'
+        + '.tile img{display:block;width:100%;background:#fff;border-bottom:1px solid #eee}'
+        + '.tile .ph{height:52mm;display:flex;align-items:center;justify-content:center;color:#aaa;border-bottom:1px solid #eee}'
+        + 'figcaption{padding:3mm 3.5mm 2.5mm}'
+        + '.cap-hd{display:flex;justify-content:space-between;align-items:baseline;font-weight:600;font-size:12.5px;margin-bottom:1.8mm}'
+        + '.cap-hd .dur{font-weight:400;font-size:11px;color:#999}'
+        + 'figcaption table{width:100%;border-collapse:collapse}'
+        + 'figcaption th{width:15mm;text-align:left;vertical-align:top;font-weight:400;font-size:11px;color:#8a857a;padding:.7mm 2mm .7mm 0;white-space:nowrap}'
+        + 'figcaption td{font-size:11.5px;color:#2f2c29;padding:.7mm 0;word-break:break-word;white-space:pre-wrap}'
+        + '.blank{font-size:11px;color:#b5b0a6}'
         + '</style></head><body>'
         + '<h1>' + esc(p.name || '故事板') + '</h1>'
         + '<p class="meta">' + shots.length + ' 镜 · ' + (p.boardW || 1280) + '×' + (p.boardH || 720) + '</p>'

@@ -160,29 +160,47 @@
       const { cvs } = await buildStoryCanvas();
       return cvs.toDataURL('image/png');
     },
-    async buildStoryHtml() {
+    async buildStoryHtml(overrideShots) {
+      /* 与 story.js buildHtml 同版式（打印优先：2 列 + 字段分栏），
+         冒烟产物直接反映用户拿到的 PDF 排版；
+         overrideShots：冒烟注入字段样例（验证分栏渲染，不动工程数据） */
       const cur = await desktopSnapshot();
-      const p = cur.project, shots = p.shots || [];
+      const p = cur.project;
+      const shots = (Array.isArray(overrideShots) && overrideShots.length) ? overrideShots : (p.shots || []);
       const tiles = [];
       for (let i = 0; i < shots.length; i++) {
-        const s = shots[i];
+        const s = shots[i], d = s.description || {};
         const du = s.image ? await fileDataUrl(s.image) : null;
+        const rows = [
+          ['画面内容', d.content], ['对白', d.dialogue], ['音效', d.sfx],
+          ['景别', d.size], ['运镜', d.move], ['焦段', d.lens],
+          ['转场', d.trans], ['备注', d.remark || d.notes]
+        ].filter(([, v]) => v != null && String(v).trim() !== '')
+          .map(([k, v]) => '<tr><th>' + k + '</th><td>' + escapeHtml(v) + '</td></tr>').join('');
         tiles.push('<figure class="tile">'
           + (du ? '<img src="' + du + '" alt="">' : '<div class="ph">（空镜）</div>')
-          + '<figcaption><b>' + (i + 1) + '</b>' + escapeHtml(shotText(s)) + '</figcaption></figure>');
+          + '<figcaption><div class="cap-hd"><span>镜 ' + (i + 1) + '</span>'
+          + '<span class="dur">' + (s.duration ? (+s.duration).toFixed(1) + 's' : '') + '</span></div>'
+          + (rows ? '<table>' + rows + '</table>' : '<div class="blank">（无描述）</div>')
+          + '</figcaption></figure>');
       }
       return '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
         + '<title>' + escapeHtml(p.name || '故事板') + '</title>'
         + '<style>'
-        + 'body{margin:0;padding:12mm;background:#fff;color:#16151c;font:13px/1.5 system-ui,"Microsoft YaHei",sans-serif}'
-        + 'h1{font-size:18px;margin:0 0 3mm}'
-        + '.meta{color:#888;font-size:11px;margin:0 0 5mm}'
-        + '.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:5mm}'
-        + '.tile{margin:0;border:1px solid #ddd;border-radius:3px;overflow:hidden;page-break-inside:avoid}'
-        + '.tile img{display:block;width:100%;background:#fff}'
-        + '.tile .ph{height:38mm;display:flex;align-items:center;justify-content:center;color:#aaa}'
-        + 'figcaption{padding:2mm;font-size:11px;color:#444}'
-        + 'figcaption b{color:#d33}'
+        + 'body{margin:0;padding:16mm 14mm;background:#fff;color:#16151c;font:13px/1.65 system-ui,"Microsoft YaHei",sans-serif}'
+        + 'h1{font-size:20px;margin:0 0 2mm}'
+        + '.meta{color:#8a857a;font-size:11.5px;margin:0 0 7mm}'
+        + '.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:7mm}'
+        + '.tile{margin:0;border:1px solid #d9d5cf;border-radius:4px;overflow:hidden;page-break-inside:avoid;break-inside:avoid}'
+        + '.tile img{display:block;width:100%;background:#fff;border-bottom:1px solid #eee}'
+        + '.tile .ph{height:52mm;display:flex;align-items:center;justify-content:center;color:#aaa;border-bottom:1px solid #eee}'
+        + 'figcaption{padding:3mm 3.5mm 2.5mm}'
+        + '.cap-hd{display:flex;justify-content:space-between;align-items:baseline;font-weight:600;font-size:12.5px;margin-bottom:1.8mm}'
+        + '.cap-hd .dur{font-weight:400;font-size:11px;color:#999}'
+        + 'figcaption table{width:100%;border-collapse:collapse}'
+        + 'figcaption th{width:15mm;text-align:left;vertical-align:top;font-weight:400;font-size:11px;color:#8a857a;padding:.7mm 2mm .7mm 0;white-space:nowrap}'
+        + 'figcaption td{font-size:11.5px;color:#2f2c29;padding:.7mm 0;word-break:break-word;white-space:pre-wrap}'
+        + '.blank{font-size:11px;color:#b5b0a6}'
         + '</style></head><body>'
         + '<h1>' + escapeHtml(p.name || '故事板') + '</h1>'
         + '<p class="meta">' + shots.length + ' 镜 · ' + (p.boardW || 1280) + '×' + (p.boardH || 720) + '</p>'

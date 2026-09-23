@@ -901,6 +901,13 @@ ipcMain.handle('export:storyPdf', async (_e, html, targetPath) => {
   const w = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true } });
   try {
     await w.loadFile(tmp);
+    /* 冒烟：用产品自身的渲染管线截一张版式样张（PDF 内容无法直接看图，靠这个验收排版） */
+    if (SMOKE) {
+      try {
+        const img = await w.webContents.capturePage();
+        require('node:fs').writeFileSync(path.join(SMOKE_ROOT, 'smoke-story.png'), img.toPNG());
+      } catch (_) {}
+    }
     const buf = await w.webContents.printToPDF({ printBackground: true, pageSize: 'A4' });
     store.writeAtomic(dst, buf);        // 原子落盘（N-B22）
   } finally {
