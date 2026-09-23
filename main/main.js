@@ -17,6 +17,28 @@ const store = require('./projectStore.js');
 /* 任务栏/开始菜单身份：与快捷方式一致，固定到任务栏后分组与图标才不混淆 */
 app.setAppUserModelId('com.fabula.workbench');
 
+/* ---------- Home 启动器（PR 同款）：最近项目 ---------- */
+const recent = require('./recent.cjs');
+const RECENT_FILE = recent.defaultFile();
+function recordRecent(root) {
+  try {
+    let name = path.basename(root), shots = 0;
+    try {
+      const pj = JSON.parse(require('node:fs').readFileSync(path.join(root, 'fabula.json'), 'utf8'));
+      if (pj && pj.name) name = String(pj.name);
+      if (pj && Array.isArray(pj.shots)) shots = pj.shots.length;
+    } catch (_) {}
+    recent.touch(RECENT_FILE, root, { name, shots });
+  } catch (_) {}
+}
+let launcherWin = null;
+let pendingLauncherDir = null;    // 启动器选目录后交给主窗口渲染端提交（消费一次即清）
+
+function openMainWindow() {
+  createWindow();
+  if (launcherWin) { try { launcherWin.close(); } catch (_) {} launcherWin = null; }
+}
+
 /* 冒烟日志落盘（提到启动链路最前面）：Windows GUI 进程的 stdout 在终端拿不到
    （console.log 静默丢失），冒烟模式下把 console 输出镜像到 smoke.log。
    必须早于单实例锁等任何可能抛错的启动步骤 —— 否则早期异常既不上屏也不落盘，
@@ -525,6 +547,34 @@ function createWindow() {
   return win;
 }
 
+/* Home 启动器窗口（PR 同款）：最近项目列表 + 新建/打开入口。
+   选完项目后由 openMainWindow() 建主窗口并关掉它。 */
+function createLauncher() {
+  launcherWin = new BrowserWindow({
+    width: 680, height: 480, minWidth: 520, minHeight: 380,
+    backgroundColor: '#151719',
+    title: 'Fabula',
+    icon: path.join(__dirname, '..', 'build', 'icon.png'),
+    autoHideMenuBar: true,
+    center: true,
+    /* 冒烟模式放到屏幕外：隐藏窗口的 rAF 会被节流，截不到稳定帧 */
+    show: true,
+    x: SMOKE ? -4200 : undefined,
+    y: SMOKE ? -4200 : undefined,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      spellcheck: false,
+      backgroundThrottling: false,
+    },
+  });
+  launcherWin.loadURL('fabula://app/launcher.html');
+  launcherWin.on('closed', () => { launcherWin = null; });
+  return launcherWin;
+}
+
 /* ---------- IPC：工程生命周期 ---------- */
 ipcMain.handle('project:create', (_e, dirPath, name) => {
   if (!isApprovedPath(approvedDirs, dirPath)) throw new Error('仅接受经系统对话框选择的目录（M-10）');
@@ -556,11 +606,87 @@ ipcMain.handle('project:commitOpen', (event, token, initialText) => {
   const pending = pendingProjects.get(event.sender.id);
   if (!pending || pending.token !== token) throw new Error('工程选择已失效，请重新打开');
   pendingProjects.delete(event.sender.id);
-  return projectSession.commit(pending.candidate, initialText, store);
+  const r = projectSession.commit(pending.candidate, initialText, store);
+  recordRecent(r.root);
+  return r;
 });
 ipcMain.handle('project:openDir', (_e, dirPath) => {
   if (!isApprovedPath(approvedDirs, dirPath)) throw new Error('仅接受经系统对话框选择的目录（M-10）');
-  return store.openDir(dirPath);
+  const r = store.openDir(dirPath);
+  recordRecent(r.root);
+  return r;
+});
+/* 主窗口直连提交（启动器选过目录后用）：目录已过对话框与 prepare，这里只发 token，不弹框 */
+ipcMain.handle('project:prepareDir', (event, dirPath) => {
+  if (!isApprovedPath(approvedDirs, dirPath)) throw new Error('仅接受经系统对话框选择的目录（M-10）');
+  const candidate = projectSession.prepare(dirPath);
+  const token = require('node:crypto').randomUUID();
+  pendingProjects.set(event.sender.id, { token, candidate });
+  return { token, root: candidate.root, montageText: candidate.montageText };
+});
+
+/* ---------- IPC：Home 启动器（路径全部经 recent 列表安全门或系统对话框） ---------- */
+ipcMain.handle('launcher:list', () => ({
+  items: recent.listLive(RECENT_FILE),
+  version: app.getVersion(),
+}));
+ipcMain.handle('launcher:forget', (_e, root) => {
+  if (typeof root === 'string' && recent.has(RECENT_FILE, root)) recent.forget(RECENT_FILE, root);
+  return recent.listLive(RECENT_FILE);
+});
+ipcMain.handle('launcher:open', (_e, root) => {
+  /* 安全门：只允许打开"自己列表里"的路径 —— 渲染端无法注入任意目录。
+     recent 列表是主进程唯一可信来源（仅自身写入），approve 后与 openDialog 同路：
+     交给主窗口渲染端 prepare+commit（完整解码/迁移/UI 载入），而不是只设主进程 store
+     —— 只设 store 的话主窗口起来仍是空态（实测踩到）。 */
+  if (typeof root !== 'string' || !recent.has(RECENT_FILE, root)) {
+    throw new Error('不在最近项目列表中，已拒绝打开');
+  }
+  approvePath(approvedDirs, root);
+  pendingLauncherDir = root;
+  openMainWindow();
+  return { ok: true, root };
+});
+ipcMain.handle('launcher:openDialog', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const r = await dialog.showOpenDialog(win, { title: '打开 / 新建工程文件夹', properties: ['openDirectory'] });
+  if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+  const dir = r.filePaths[0];
+  approvePath(approvedDirs, dir);
+  const candidate = projectSession.prepare(dir);           // 损坏 JSON 在此抛出，目录不会被动
+  if (candidate.auxiliaryText === null) {
+    const m = await dialog.showMessageBox(win, {
+      type: 'question', buttons: ['在此创建工程', '取消'], defaultId: 0, cancelId: 1,
+      message: '该文件夹还不是 Fabula 工程', detail: dir + '\n将创建工程描述文件，已有素材会保留。',
+    });
+    if (m.response !== 0) return { ok: false, canceled: true };
+  }
+  pendingLauncherDir = dir;
+  openMainWindow();
+  return { ok: true };
+});
+ipcMain.handle('launcher:newProject', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const r = await dialog.showOpenDialog(win, { title: '选择位置（工程将建在该文件夹内）', properties: ['openDirectory', 'createDirectory'] });
+  if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+  const dir = r.filePaths[0];
+  approvePath(approvedDirs, dir);
+  const fsn = require('node:fs');
+  if (fsn.existsSync(path.join(dir, 'montage.json')) || fsn.existsSync(path.join(dir, 'fabula.json'))) {
+    const m = await dialog.showMessageBox(win, {
+      type: 'question', buttons: ['打开已有工程', '取消'], defaultId: 0, cancelId: 1,
+      message: '该文件夹已有 Fabula 工程', detail: '将直接打开它（不会覆盖）。',
+    });
+    if (m.response !== 0) return { ok: false, canceled: true };
+  }
+  pendingLauncherDir = dir;
+  openMainWindow();
+  return { ok: true };
+});
+ipcMain.handle('launcher:pending', () => {
+  const dir = pendingLauncherDir;
+  pendingLauncherDir = null;
+  return dir;
 });
 /* project:save 已删除（H-7）：它把渲染端模型 normalize 成 shots 模型写 fabula.json，
    渲染端模型（tracks/clips）会被静默丢弃 —— 渲染端从未调用，留着是埋雷。
@@ -819,9 +945,49 @@ app.whenReady().then(() => {
     const u = new URL(req.url);
     return u.host === 'proj' ? serveProjectFile(u, req) : serveFromSrc(u);
   });
-  createWindow();
+  const smokeLauncher = process.argv.includes('--smoke-launcher');
+  if (SMOKE && smokeLauncher) {
+    /* 启动器冒烟：预置一条演示最近项目保证截图有内容 */
+    const fs2 = require('node:fs');
+    const os2 = require('node:os');
+    const demo = fs2.mkdtempSync(path.join(os2.tmpdir(), 'fabula-home-'));
+    fs2.writeFileSync(path.join(demo, 'fabula.json'),
+      JSON.stringify({ name: '示例 · 雨夜追车', shots: [{ id: 'sh-a' }, { id: 'sh-b' }, { id: 'sh-c' }] }, null, 2));
+    recent.touch(RECENT_FILE, demo, { name: '示例 · 雨夜追车', shots: 3 });
+  }
+  if (SMOKE && !smokeLauncher) createWindow();
+  else createLauncher();
+  if (SMOKE && smokeLauncher) {
+    const lw = () => launcherWin;
+    setTimeout(async () => {
+      const fs3 = require('node:fs');
+      try {
+        let shotWin = lw();
+        if (process.argv.includes('--smoke-launcher-open')) {
+          /* 双击第一条 → 应开出主窗口并把该工程设为当前 */
+          await shotWin.webContents.executeJavaScript(
+            'document.querySelector(".rl-item") && document.querySelector(".rl-item").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))');
+          await new Promise((r) => setTimeout(r, 3200));   // 等完整链路：prepare → commit → 解码 → 首帧
+          const main = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w !== shotWin) || null;
+          if (main) {
+            const info = await main.webContents.executeJavaScript('window.__fabulaTest ? window.__fabulaTest.status() : "no-hook"');
+            console.log('[smoke] launcher-open status:', info);
+            shotWin = main;
+          } else {
+            console.log('[smoke] launcher-open: NO MAIN WINDOW');
+          }
+        }
+        const img = await shotWin.webContents.capturePage();
+        fs3.writeFileSync(path.join(SMOKE_ROOT, 'smoke-shot.png'), img.toPNG());
+        console.log('[smoke] screenshot saved');
+      } catch (e) { console.error('[smoke] launcher capture failed:', e.message); }
+      app.exit(0);
+    }, 2600);
+  }
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      if (SMOKE) createWindow(); else createLauncher();
+    }
   });
 });
 

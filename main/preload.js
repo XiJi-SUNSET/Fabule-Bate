@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('fabula', {
     openDialog: () => ipcRenderer.invoke('project:openDialog'),
     commitOpen: (token, initialText) => ipcRenderer.invoke('project:commitOpen', token, initialText),
     openDir: (dirPath) => ipcRenderer.invoke('project:openDir', dirPath),
+    /* Home 启动器链路：目录已过对话框，只 prepare + token（不弹框），供主窗口自动打开 */
+    prepareDir: (dirPath) => ipcRenderer.invoke('project:prepareDir', dirPath),
     current: () => ipcRenderer.invoke('project:current'),
     writeShotImage: (shotId, dataUrl) => ipcRenderer.invoke('project:writeShotImage', shotId, dataUrl),
     /* 桌面存储后端（storage.js 的 electron 模式用）：相对工程根的读写 */
@@ -34,6 +36,15 @@ contextBridge.exposeInMainWorld('fabula', {
       ipcRenderer.on('project:changed', h);
       return () => { try { ipcRenderer.removeListener('project:changed', h); } catch (_) {} };
     }
+  },
+  launcher: {
+    /* Home 启动器（launcher.html 专用）：最近项目 + 新建/打开入口 */
+    list: () => ipcRenderer.invoke('launcher:list'),
+    open: (root) => ipcRenderer.invoke('launcher:open', root),
+    forget: (root) => ipcRenderer.invoke('launcher:forget', root),
+    openDialog: () => ipcRenderer.invoke('launcher:openDialog'),
+    newProject: () => ipcRenderer.invoke('launcher:newProject'),
+    pending: () => ipcRenderer.invoke('launcher:pending'),
   },
   assets: {
     /* 文件对话框多选 → 复制进工程 assets/ → 返回 { root, project, added, skipped, addedPaths } */

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' fabula: data: blob:; connect-src 'self' fabula: data: blob:; base-uri 'none'; form-action 'none'; object-src 'none'">
+<title>Fabula · 开始</title>
+<link rel="stylesheet" href="css/style.css">
+<style>
+/* ── Home 启动器（PR 同款）：最近项目 + 新建/打开 ── */
+html, body { height: 100%; }
+body { overflow: hidden; }
+.hm-wrap { display: flex; flex-direction: column; height: 100%; padding: 18px 20px 14px; gap: 12px; }
+.hm-head { display: flex; align-items: center; gap: 11px; flex: none; }
+.hm-head .brand-mark { width: 22px; height: 22px; }
+.hm-title { font-size: 17px; font-weight: 650; letter-spacing: .5px; }
+.hm-sub { font-size: 10.5px; color: var(--text-dim); margin-top: 1px; }
+.hm-sec { font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--text-dim); flex: none; margin-top: 2px; }
+.hm-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.rl-item {
+  position: relative; display: flex; flex-direction: column; gap: 3px;
+  padding: 9px 34px 9px 12px; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--card); cursor: pointer; user-select: none;
+}
+.rl-item:hover { background: rgba(var(--red-rgb), .07); border-color: rgba(var(--red-rgb), .35); }
+.rl-item.sel { border-color: var(--red); box-shadow: 0 0 0 1px var(--red); }
+.rl-item.missing { opacity: .55; cursor: default; }
+.rl-item.missing:hover { background: var(--card); border-color: var(--border); }
+.rl-name { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rl-meta { font-size: 10.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rl-x {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 20px; height: 20px; border: 0; border-radius: 5px; background: transparent;
+  color: var(--text-dim); font: inherit; font-size: 13px; cursor: pointer; line-height: 1;
+}
+.rl-x:hover { background: rgba(var(--red-rgb), .16); color: var(--red); }
+.hm-empty { padding: 22px 12px; color: var(--text-dim); font-size: 11.5px; line-height: 1.8; }
+.hm-tip { font-size: 10px; color: var(--text-dim); flex: none; }
+.hm-actions { display: flex; align-items: center; gap: 8px; flex: none; padding-top: 2px; }
+.hm-ver { margin-left: auto; font-size: 10px; color: var(--text-dim); }
+.hm-actions .btn { height: 30px; padding: 0 14px; }
+.btn.primary { background: var(--red); border-color: var(--red); color: #fff; }
+.btn.primary:hover { background: var(--red-dark); }
+#hm-toast {
+  position: fixed; left: 50%; bottom: 56px; transform: translateX(-50%);
+  max-width: 86%; padding: 7px 14px; border-radius: 8px; font-size: 11.5px;
+  background: var(--card-strong); border: 1px solid var(--border); color: var(--text);
+  box-shadow: var(--shadow); z-index: 9;
+}
+#hm-toast.err { border-color: rgba(var(--red-rgb), .6); color: var(--red); }
+</style>
+</head>
+<body data-theme="dark">
+
+<div class="hm-wrap">
+  <header class="hm-head">
+    <i class="brand-mark"></i>
+    <div>
+      <div class="hm-title">Fabula</div>
+      <div class="hm-sub">分镜创作工作台</div>
+    </div>
+  </header>
+
+  <div class="hm-sec">最近项目</div>
+  <div class="hm-list" id="hm-list"></div>
+  <div class="hm-tip">双击项目打开 · 单击选中 · 悬停 × 从列表移除</div>
+
+  <footer class="hm-actions">
+    <button class="btn primary" id="btn-new" title="选择一个文件夹，在其中创建新工程">新建工程</button>
+    <button class="btn" id="btn-open" title="打开已有工程文件夹（不是工程时可现场创建）">打开文件夹…</button>
+    <span class="hm-ver" id="hm-ver"></span>
+  </footer>
+</div>
+<div id="hm-toast" class="hidden"></div>
+
+<script type="module" src="launcher.js"></script>
+</body>
+</html>

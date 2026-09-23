@@ -418,8 +418,12 @@
     }
   }
 
+  let bootPendingSrc = null;   // 启动器遗留目录的打开源（boot 时消费一次）
+
   async function openFolderInner() {
-    const opened = await MTG.storage.openFolder();
+    const src = bootPendingSrc;
+    bootPendingSrc = null;
+    const opened = await (src ? src() : MTG.storage.openFolder());
     if (!opened) return;
     const proj = opened.project;
     // 两端已确认候选，之后才释放旧工程的资源。
@@ -1423,6 +1427,20 @@
     MTG.ui.buildBrushParams();
     MTG.ui.syncBrushSliders();
     MTG.ui.syncSel();
+
+    /* Home 启动器遗留：在启动器里选过目录（新建/打开）后进主窗口，自动进入该工程，
+       免去用户再点一次「打开」。路径来自主进程 pending（已过对话框与安全门）。 */
+    if (window.fabula && window.fabula.launcher) {
+      try {
+        const pend = await window.fabula.launcher.pending();
+        if (pend && MTG.storage && MTG.storage.openPendingDir) {
+          bootPendingSrc = () => MTG.storage.openPendingDir(pend);
+          openFolder();               // 走与「打开文件夹」相同的完整事务（保存/清缓存/提示）
+        }
+      } catch (e) {
+        MTG.toast && MTG.toast('自动打开失败：' + ((e && e.message) || e), true);
+      }
+    }
   }
 
   document.addEventListener('DOMContentLoaded', boot);

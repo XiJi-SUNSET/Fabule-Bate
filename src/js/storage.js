@@ -36,12 +36,28 @@
     async _openDesktop() {
       const candidate = await FN().openDialog();
       if (!candidate) return null;
+      return S._commitCandidate(candidate);
+    },
+
+    /* 候选提交（openDialog 与 prepareDir 返回同构）：解析/迁移/落盘确认。 */
+    async _commitCandidate(candidate) {
       const name = candidate.root.split(/[\\/]/).filter(Boolean).pop() || '';
       const project = candidate.montageText === null ? MTG.newProject(name) : S.decodeProject(candidate.montageText);
       MTG.migrateProject(project);
       await FN().commitOpen(candidate.token, JSON.stringify(project, null, 2));
       S.mode = 'electron'; S.desktopRoot = candidate.root; S.dirName = name;
       return { project, created: candidate.montageText === null };
+    },
+
+    /* Home 启动器已选好目录（主进程侧弹过对话框并校验）：免再弹框，直接 prepare 提交 */
+    async openPendingDir(dir) {
+      if (picking) return null;
+      picking = true;
+      try {
+        const candidate = await FN().prepareDir(dir);
+        if (!candidate) return null;
+        return await S._commitCandidate(candidate);
+      } finally { picking = false; }
     },
 
     /* 浏览器：File System Access API */
