@@ -542,6 +542,17 @@
       return lines.join('\n');
     },
 
+    /* canvas 物理尺寸保护：浏览器单边上限 ~32767 —— 超限的 canvas 会整体失效、
+       表现为"标尺/波形整条变白"（内容宽 × DPR 放大后极易踩到）。
+       超宽时自动降有效 dpr（可 < 1：画面稍糊但内容完整可见）。返回本次 dpr。 */
+    fitCanvas(cv, cssW, cssH) {
+      const cap = 32000;
+      const dpr = Math.max(0.02, Math.min(window.devicePixelRatio || 1, 2, cap / Math.max(1, cssW)));
+      cv.width = Math.max(1, Math.round(cssW * dpr));
+      cv.height = Math.max(1, Math.round(cssH * dpr));
+      return dpr;
+    },
+
     /* 音频波形（对齐 DAW / 剪辑软件的画法）：
        · DPR 感知：canvas 内容尺寸按 devicePixelRatio 放大（显示尺寸交给 CSS 的 100%），
          高分屏不再半分辨率糊；超宽 clip 自动降回，防 32767 单边上限；
@@ -555,11 +566,8 @@
       const cssW = Math.max(6, Math.round(c.dur * pps));
       const tk = tr || MTG.findTrack(c.trackId);
       const cssH = ((tk && tk.h) || 62) - 8;         // 轨道高减去 clip 上下留白
-      const cap = 32000;                             // 浏览器 canvas 单边上限 ~32767
-      const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2, cap / cssW));
-      const w = Math.max(1, Math.round(cssW * dpr));
-      const h = Math.max(1, Math.round(cssH * dpr));
-      cv.width = w; cv.height = h;                   // 显示尺寸由 CSS（inset:0 100%）负责
+      const dpr = TL.fitCanvas(cv, cssW, cssH);      // 超宽自动降 dpr（防 32767 上限整体变白）
+      const w = cv.width, h = cv.height;             // 显示尺寸由 CSS（inset:0 100%）负责
       const x = cv.getContext('2d');
       x.clearRect(0, 0, w, h);
       const mid = h / 2;
@@ -609,9 +617,8 @@
 
     drawRuler() {
       const cv = TL.el.ruler;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const w = TL.contentW, h = 30;
-      cv.width = w * dpr; cv.height = h * dpr;
+      const dpr = TL.fitCanvas(cv, w, h);            // 超宽自动降 dpr（防 32767 上限整体变白）
       cv.style.width = w + 'px'; cv.style.height = h + 'px';
       const x = cv.getContext('2d');
       x.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -630,7 +637,8 @@
       x.strokeStyle = cGrid;
       x.fillStyle = cText;
       x.font = '10px "Cascadia Mono", Consolas, monospace';
-      x.lineWidth = 1;
+      /* dpr<1（超宽降级）时线宽按 1/dpr 放大：否则 1 物理像素的线被磨成不可见 */
+      x.lineWidth = dpr < 1 ? 1 / dpr : 1;
       // 用整数序号推进：浮点累加会让「是否主刻度」判断漂移，导致主刻度漏画
       const end = w / pps;
       const per = Math.max(1, Math.round(step / minor));
