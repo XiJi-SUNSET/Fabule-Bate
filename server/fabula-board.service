@@ -1,0 +1,23 @@
+# Fabula Board · 故事板外挂审阅服务（systemd 单元）
+# 安装：sudo cp fabula-board.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now fabula-board
+# 说明：绑 127.0.0.1:8787，公网入口走 Nginx 反代（/fabula-board/ → 本服务）
+[Unit]
+Description=Fabula Board (storyboard review service)
+After=network.target
+
+[Service]
+User=ecs-user
+Group=ecs-user
+WorkingDirectory=/opt/fabula-board
+Environment=FABULA_BOARD_PORT=8787
+Environment=FABULA_BOARD_DATA=/opt/fabula-board/data
+ExecStart=/usr/bin/python3 /opt/fabula-board/board-server.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/fabula-board/data
+
+[Install]
+WantedBy=multi-user.target

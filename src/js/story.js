@@ -450,6 +450,103 @@
       } finally { if (btn) btn.disabled = false; }
     },
 
+    /* ── 发布到服务器（外挂审阅副本，见 server/board-server.py） ──
+       收集：镜头缩略图（dataURL）+ 字段 + 时长 + 镜号 → 主进程 POST。
+       全程只读工程；服务器上的替换/便签是独立副本，永不回写。 */
+    openPublish() {
+      const m = document.getElementById('pub-modal');
+      if (!m) return;
+      const sv = document.getElementById('pub-server');
+      const sc = document.getElementById('pub-secret');
+      if (sv && !sv.value) sv.value = MTG.settings.get('boardServer') || 'http://123.57.165.181:8080';
+      if (sc && !sc.value) sc.value = MTG.settings.get('boardSecret') || '';
+      const lw = document.getElementById('pub-linkwrap');
+      if (lw) lw.classList.add('hidden');
+      const st = document.getElementById('pub-status');
+      if (st) st.textContent = '发布后手机打开同一份内容；替换镜图与便签只存服务器副本，不回写工程。';
+      m.classList.remove('hidden');
+      if (sc && !sc.value) setTimeout(() => sc.focus(), 40);
+    },
+    closePublish() {
+      const m = document.getElementById('pub-modal');
+      if (m) m.classList.add('hidden');
+    },
+    async buildPublishPayload() {
+      const shots = MTG.board.orderedShots();
+      const p = MTG.state.project;
+      const payload = { name: p.name || '故事板', size: (p.boardW || 1280) + '×' + (p.boardH || 720), shots: [] };
+      for (let i = 0; i < shots.length; i++) {
+        const s = shots[i], m = s.meta || {};
+        const b = s.boardId ? MTG.findBoard(s.boardId) : null;
+        let du = null;
+        if (b) {
+          try {
+            const u = await MTG.board.thumbUrl(b);
+            if (u) {
+              const blob = await (await fetch(u)).blob();
+              du = await new Promise((res) => {
+                const r = new FileReader();
+                r.onload = () => res(String(r.result));
+                r.onerror = () => res(null);
+                r.readAsDataURL(blob);
+              });
+            }
+          } catch (_) {}
+        }
+        payload.shots.push({
+          no: i + 1,
+          dur: s.dur ? ((+s.dur).toFixed(1) + 's') : '',
+          fields: {
+            '画面内容': m.content || '', '对白': m.dialogue || '', '音效': m.sfx || '',
+            '景别': m.size || '', '运镜': m.move || '', '焦段': m.lens || '',
+            '转场': m.trans || '', '备注': m.remark || '',
+          },
+          img: du,
+        });
+      }
+      return payload;
+    },
+    async publish() {
+      const exp = window.fabula && window.fabula.exp;
+      if (!exp || !exp.publishBoard) { MTG.toast('仅桌面版支持发布到服务器', true); return; }
+      if (!MTG.state.project || !MTG.board.orderedShots().length) { MTG.toast('还没有镜头，先做几张再发布', true); return; }
+      const sv = document.getElementById('pub-server');
+      const sc = document.getElementById('pub-secret');
+      const server = sv ? sv.value.trim() : '';
+      const secret = sc ? sc.value.trim() : '';
+      if (!server || !secret) { MTG.toast('先填服务器地址和访问密钥', true); return; }
+      const st = document.getElementById('pub-status');
+      const go = document.getElementById('pub-go');
+      if (go && go.disabled) return;
+      if (go) { go.disabled = true; go.textContent = '发布中…'; }
+      try {
+        if (st) st.textContent = '正在收集缩略图…';
+        const payload = await S.buildPublishPayload();
+        if (st) st.textContent = '上传中（' + payload.shots.length + ' 镜）…';
+        MTG.settings.set('boardServer', server);
+        MTG.settings.set('boardSecret', secret);
+        const r = await exp.publishBoard(server, secret, payload);
+        if (r && r.ok) {
+          if (st) st.textContent = '已发布 ' + r.shots + ' 镜 ✓';
+          const li = document.getElementById('pub-link');
+          if (li) li.value = r.url || '';
+          const lw = document.getElementById('pub-linkwrap');
+          if (lw) lw.classList.remove('hidden');
+          MTG.toast('已发布：手机打开链接即可浏览');
+        } else {
+          const msg = (r && r.error) || '未知错误';
+          if (st) st.textContent = '发布失败：' + msg;
+          MTG.toast('发布失败：' + msg, true);
+        }
+      } catch (e) {
+        const msg = (e && e.message) || String(e);
+        if (st) st.textContent = '发布失败：' + msg;
+        MTG.toast('发布失败：' + msg, true);
+      } finally {
+        if (go) { go.disabled = false; go.textContent = '发布'; }
+      }
+    },
+
     /* ── 放映 ── */
     play() {
       S.shots = MTG.board.orderedShots();
@@ -552,6 +649,16 @@
       if (ep) ep.onclick = () => S.exportPng();
       const ed = $('st-export-pdf');
       if (ed) ed.onclick = () => S.exportPdf();
+      const pb = $('st-publish');
+      if (pb) pb.onclick = () => S.openPublish();
+      const pc = $('pub-close');
+      if (pc) pc.onclick = () => S.closePublish();
+      const pd = $('pub-done');
+      if (pd) pd.onclick = () => S.closePublish();
+      const pg = $('pub-go');
+      if (pg) pg.onclick = () => S.publish();
+      const pm = $('pub-modal');
+      if (pm) pm.addEventListener('click', (e) => { if (e.target === pm) S.closePublish(); });
 
       document.addEventListener('keydown', e => {
         if (!S.sliding) return;

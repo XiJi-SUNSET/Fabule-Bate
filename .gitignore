@@ -5,3 +5,6 @@ node_modules/
 # 工程运行期临时文件（若工程目录恰在本仓库内，N-B17）
 montage.json.lock
 *.tmp-*
+
+# Fabula Board 服务端数据（含访问 secret，绝不入仓）
+server/data/

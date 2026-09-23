@@ -917,6 +917,40 @@ ipcMain.handle('export:storyPdf', async (_e, html, targetPath) => {
   return { ok: true, path: dst };
 });
 
+/* 故事板发布到用户服务器（外挂审阅副本，见 server/board-server.py）：
+   渲染端 CSP 不放行外部 http，统一走主进程 fetch。
+   安全：只放行 http/https；secret 限制字符集；固定路径 /fabula-board/ 由部署的
+   Nginx location 反代到本机服务，用户地址里只给 origin。 */
+ipcMain.handle('publish:board', async (_e, server, secret, payload) => {
+  try {
+    if (typeof server !== 'string' || typeof secret !== 'string') return { ok: false, error: '参数无效' };
+    let u;
+    try { u = new URL(server); } catch (_) { return { ok: false, error: '服务器地址格式不对（示例：http://123.57.165.181）' }; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, error: '只支持 http/https 地址' };
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(secret)) return { ok: false, error: '访问密钥格式无效（8-128 位字母/数字/-_）' };
+    if (!payload || typeof payload !== 'object' || !Array.isArray(payload.shots)) return { ok: false, error: '发布数据无效' };
+    const base = u.origin + '/fabula-board/s/' + secret + '/';
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    let resp;
+    try {
+      resp = await fetch(base + 'api/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: ctrl.signal,
+      });
+    } finally { clearTimeout(timer); }
+    const j = await resp.json().catch(() => null);
+    if (!resp.ok || !j || j.ok !== true) {
+      return { ok: false, error: (j && j.error) || ('HTTP ' + resp.status) };
+    }
+    return { ok: true, shots: j.shots, url: base };
+  } catch (e) {
+    return { ok: false, error: '连接失败：' + ((e && e.message) || String(e)) };
+  }
+});
+
 /* 图片序列导出（渲染端 UI 模型，M-13）：按传入顺序把工程内帧图复制为 01.png…。
    只接受工程根内的 PNG 相对路径（白名单校验），目标目录由系统对话框选择；
    测试模式可经 dirPath 显式传入（N-B21）。 */

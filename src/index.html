@@ -353,6 +353,7 @@
       <span class="divider"></span>
       <button id="st-export-png" class="btn tiny ghost" title="导出当前故事板为 PNG（系统对话框选保存位置）">导出图</button>
       <button id="st-export-pdf" class="btn tiny ghost" title="导出当前故事板为 PDF">导出 PDF</button>
+      <button id="st-publish" class="btn tiny ghost" title="发布到你的服务器：手机浏览器浏览，可替换分镜 / 记便签（只存服务器副本，不回写工程）">发布到服务器…</button>
       <span class="divider"></span>
       <span class="hint">点画面 = 绘制该镜头 · 双击卡片 = 跳到时间轴</span>
       <div class="tb-spacer"></div>
@@ -387,6 +388,36 @@
       <button id="pm-cancel" class="btn ghost" title="放弃本次修改直接关闭">取消</button>
     </div>
     <div id="pm-body" class="paint-modal-body"></div>
+  </div>
+
+  <!-- ══════════ 发布到服务器（外挂审阅副本：手机浏览 / 替换镜图 / 便签，不回写工程） ══════════ -->
+  <div id="pub-modal" class="set-modal pub-modal hidden">
+    <div class="set-box">
+      <div class="set-head">
+        <span class="set-title">发布到服务器</span>
+        <button class="set-x" id="pub-close" title="关闭">×</button>
+      </div>
+      <div class="set-body">
+        <div class="set-row"><div class="set-lab">服务器地址</div><div class="set-ctl">
+          <input id="pub-server" type="text" placeholder="http://123.57.165.181:8080">
+        </div></div>
+        <div class="set-row"><div class="set-lab">访问密钥</div><div class="set-ctl">
+          <input id="pub-secret" type="text" placeholder="部署时生成的 secret">
+        </div></div>
+        <div class="set-note" id="pub-status">发布后手机打开同一份内容；替换镜图与便签只存服务器副本，不回写工程。</div>
+        <div id="pub-linkwrap" class="hidden">
+          <div class="set-row"><div class="set-lab">手机链接</div><div class="set-ctl">
+            <input id="pub-link" type="text" readonly>
+          </div></div>
+          <div class="set-note">复制到手机浏览器打开并收藏（URL 即凭证，别外传）。</div>
+        </div>
+      </div>
+      <div class="set-foot">
+        <div class="tb-spacer"></div>
+        <button class="btn tiny ghost" id="pub-done">关闭</button>
+        <button class="btn tiny" id="pub-go">发布</button>
+      </div>
+    </div>
   </div>
 
 <div id="toast" class="toast"></div>

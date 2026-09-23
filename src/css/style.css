@@ -763,6 +763,16 @@ textarea.sp-ctl { min-height: 34px; resize: vertical; line-height: 1.45; }
 .set-body { flex: 1; min-height: 0; overflow: auto; padding: 10px 14px; }
 .set-foot { display: flex; align-items: center; gap: 8px; flex: none; padding: 8px 12px; border-top: 1px solid var(--border); }
 .set-foot .tb-spacer { flex: 1; }
+
+/* ── 发布到服务器弹窗（复用 .set-* 体系；CSP 禁内联样式，全部走这里） ── */
+.pub-modal .set-box { width: min(480px, 92vw); }
+.pub-modal .set-row { grid-template-columns: 84px minmax(0, 1fr); }
+.pub-modal input[type="text"] {
+  width: 100%; font-size: 12px; padding: 4px 8px;
+  background: var(--input-bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; font-family: inherit;
+}
+#pub-linkwrap { margin-top: 6px; }
 .set-row {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px;
   align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border);

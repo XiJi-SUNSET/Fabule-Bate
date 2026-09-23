@@ -63,6 +63,8 @@ contextBridge.exposeInMainWorld('fabula', {
        dirPath 仅测试模式生效（N-B21） */
     shotFiles: (rels, dirPath) => ipcRenderer.invoke('export:shotFiles', rels, dirPath),
     storyPng: (dataUrl, targetPath) => ipcRenderer.invoke('export:storyPng', dataUrl, targetPath),
-    storyPdf: (html, targetPath) => ipcRenderer.invoke('export:storyPdf', html, targetPath)
+    storyPdf: (html, targetPath) => ipcRenderer.invoke('export:storyPdf', html, targetPath),
+    /* 故事板发布到用户服务器（外挂审阅副本）：渲染端 CSP 不放行外部 http，统一走主进程 */
+    publishBoard: (server, secret, payload) => ipcRenderer.invoke('publish:board', server, secret, payload)
   }
 });
