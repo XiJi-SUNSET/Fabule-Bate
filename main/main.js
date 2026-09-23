@@ -14,6 +14,9 @@ if (SMOKE) {
 }
 const store = require('./projectStore.js');
 
+/* 任务栏/开始菜单身份：与快捷方式一致，固定到任务栏后分组与图标才不混淆 */
+app.setAppUserModelId('com.fabula.workbench');
+
 /* 冒烟日志落盘（提到启动链路最前面）：Windows GUI 进程的 stdout 在终端拿不到
    （console.log 静默丢失），冒烟模式下把 console 输出镜像到 smoke.log。
    必须早于单实例锁等任何可能抛错的启动步骤 —— 否则早期异常既不上屏也不落盘，
