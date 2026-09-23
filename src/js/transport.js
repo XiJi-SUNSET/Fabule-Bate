@@ -33,12 +33,14 @@
       A.ensure();
       const arr = await blob.arrayBuffer();
       const buffer = await A.ctx.decodeAudioData(arr);
-      const peaks = computePeaks(buffer, 1400);
-      const rec = { buffer, peaks };
+      const wave = buildWave(buffer);
+      const rec = { buffer, wave };
       A.cache.set(assetId, rec);
       return rec;
     },
     peek(assetId) { return A.cache.get(assetId) || null; },
+    /* 波形数据层自检口（冒烟/调试）：合成 buffer 直接验证金字塔正确性 */
+    __test: { buildWave },
     durationOf(assetId) {
       const r = A.cache.get(assetId);
       return r ? r.buffer.duration : 0;
@@ -125,18 +127,35 @@
     A.raf = requestAnimationFrame(tick);
   }
 
-  /* 波形峰值：分桶取绝对值最大的采样点 */
-  function computePeaks(buffer, buckets) {
-    const ch = buffer.getChannelData(0);
-    const step = Math.max(1, Math.floor(ch.length / buckets));
-    const n = Math.min(buckets, Math.ceil(ch.length / step));
-    const out = new Float32Array(n);
-    for (let i = 0; i < n; i++) {
-      let max = 0;
-      const s = i * step, e = Math.min(ch.length, s + step);
-      for (let j = s; j < e; j++) { const v = Math.abs(ch[j]); if (v > max) max = v; }
-      out[i] = max;
+  /* 波形峰值金字塔（DAW / 剪辑软件通用做法，替代旧的"固定 1400 桶 abs-max"）：
+     · 多级 min/max 对：每桶 256 / 1024 / 4096 / 16384 / 65536 采样，
+       渲染时按"每列覆盖采样数"选级 —— 缩小有足够多的桶、放大能退回原始采样；
+     · min/max 而非 abs-max：上下包络独立，非对称波形不失真（旧的对称化会显得假）；
+     · 立体声并集：min 取两声道更小、max 取更大，包络不丢能量。
+     内存：5 级合计 ≈ 首级的 1.33 倍（约为原始 PCM 的 0.5%），随 buffer 一起常驻缓存。 */
+  const WAVE_LEVELS = [256, 1024, 4096, 16384, 65536];
+  function buildWave(buffer) {
+    const ch0 = buffer.getChannelData(0);
+    const ch1 = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : null;
+    const len = ch0.length;
+    const levels = [];
+    for (const step of WAVE_LEVELS) {
+      if (step > len) break;                       // 比数据还长的桶没有意义
+      const n = Math.ceil(len / step);
+      const mn = new Float32Array(n);
+      const mx = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const s = i * step, e = Math.min(len, s + step);
+        let lo = 1, hi = -1;
+        for (let j = s; j < e; j++) {
+          const a = ch0[j];
+          if (a < lo) lo = a; if (a > hi) hi = a;
+          if (ch1) { const b = ch1[j]; if (b < lo) lo = b; if (b > hi) hi = b; }
+        }
+        mn[i] = lo; mx[i] = hi;
+      }
+      levels.push({ step, min: mn, max: mx });
     }
-    return out;
+    return { levels, len };
   }
 })();

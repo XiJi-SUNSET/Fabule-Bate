@@ -542,29 +542,69 @@
       return lines.join('\n');
     },
 
+    /* 音频波形（对齐 DAW / 剪辑软件的画法）：
+       · DPR 感知：canvas 内容尺寸按 devicePixelRatio 放大（显示尺寸交给 CSS 的 100%），
+         高分屏不再半分辨率糊；超宽 clip 自动降回，防 32767 单边上限；
+       · 多级峰值：按"每列覆盖采样数"从金字塔选级；列级比最细桶还细时直接读原始采样
+         （放大到采样级依然真实，不再出现方块台阶）；
+       · min/max 包络：上下沿独立绘制，非对称波形不失真；
+       · 越界列跳过：clip 偏移/尾部超出源音频时留空，而不是取错数据。 */
     drawWave(cv, c, tr) {
       const rec = MTG.audio.peek(c.assetId);
       const pps = MTG.state.pxPerSec;
-      const w = Math.max(6, Math.round(c.dur * pps));
+      const cssW = Math.max(6, Math.round(c.dur * pps));
       const tk = tr || MTG.findTrack(c.trackId);
-      const h = ((tk && tk.h) || 62) - 8;            // 轨道高减去 clip 上下留白
-      cv.width = w; cv.height = h;
+      const cssH = ((tk && tk.h) || 62) - 8;         // 轨道高减去 clip 上下留白
+      const cap = 32000;                             // 浏览器 canvas 单边上限 ~32767
+      const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2, cap / cssW));
+      const w = Math.max(1, Math.round(cssW * dpr));
+      const h = Math.max(1, Math.round(cssH * dpr));
+      cv.width = w; cv.height = h;                   // 显示尺寸由 CSS（inset:0 100%）负责
       const x = cv.getContext('2d');
       x.clearRect(0, 0, w, h);
-      if (!rec) return;
-      const total = rec.buffer.duration || 1;
-      const peaks = rec.peaks;
       const mid = h / 2;
-      x.fillStyle = getComputedStyle(document.body).getPropertyValue('--green').trim() || '#6aa878';
-      for (let px = 0; px < w; px++) {
-        const t = (c.offset || 0) + (px / w) * c.dur;
-        if (t > total) break;
-        const i = Math.min(peaks.length - 1, Math.floor((t / total) * peaks.length));
-        const amp = peaks[i] * (mid - 2);
-        x.fillRect(px, mid - amp, 1, Math.max(1, amp * 2));
-      }
       x.fillStyle = 'rgba(255,255,255,.25)';
-      x.fillRect(0, mid, w, 1);
+      x.fillRect(0, Math.floor(mid), w, 1);
+      if (!rec || !rec.wave || !rec.wave.levels.length) return;
+      const buf = rec.buffer;
+      const sr = buf.sampleRate;
+      const len = buf.length;
+      const levels = rec.wave.levels;
+      const off = Math.max(0, c.offset || 0);        // 源音频内起点（秒）
+      const dur = c.dur;
+      const perCol = (dur * sr) / w;                 // 每物理像素列覆盖的采样数
+      let lvl = null;
+      for (const L of levels) if (L.step <= perCol) lvl = L;   // 选"最后一个不超格的级"
+      const ch0 = buf.getChannelData(0);
+      const ch1 = buf.numberOfChannels > 1 ? buf.getChannelData(1) : null;
+      const amp = mid - 1;
+      x.fillStyle = getComputedStyle(document.body).getPropertyValue('--green').trim() || '#6aa878';
+      for (let col = 0; col < w; col++) {
+        const s0 = (off + (col / w) * dur) * sr;
+        const s1 = (off + ((col + 1) / w) * dur) * sr;
+        if (s1 <= 0 || s0 >= len) continue;          // 列完全在源音频之外
+        let lo = 0, hi = 0;
+        if (lvl) {
+          const i0 = Math.max(0, Math.floor(s0 / lvl.step));
+          const i1 = Math.min(lvl.min.length - 1, Math.ceil(s1 / lvl.step) - 1);
+          for (let i = i0; i <= i1; i++) {
+            if (lvl.min[i] < lo) lo = lvl.min[i];
+            if (lvl.max[i] > hi) hi = lvl.max[i];
+          }
+        } else {
+          /* 列比最细桶还窄：逐采样读（放大到采样级） */
+          const j0 = Math.max(0, Math.floor(s0));
+          const j1 = Math.min(len, Math.ceil(s1));
+          for (let j = j0; j < j1; j++) {
+            const a = ch0[j];
+            if (a < lo) lo = a; if (a > hi) hi = a;
+            if (ch1) { const b = ch1[j]; if (b < lo) lo = b; if (b > hi) hi = b; }
+          }
+        }
+        const yTop = mid - hi * amp;
+        const yBot = mid - lo * amp;
+        x.fillRect(col, yTop, 1, Math.max(1, yBot - yTop));
+      }
     },
 
     drawRuler() {
