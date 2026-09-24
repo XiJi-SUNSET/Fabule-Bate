@@ -17,18 +17,11 @@ $work = "$here\.work"
 Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $out, $work, "$work\gen", "$work\classes", "$work\dex" | Out-Null
 
-Write-Host '1/7 icon (build/icon.png -> mipmap 192px)'
-Add-Type -AssemblyName System.Drawing
-$srcPath = "$here\..\build\icon.png"
-if (-not (Test-Path $srcPath)) { throw "missing $srcPath (run: npm run icon)" }
-$src = [System.Drawing.Image]::FromFile($srcPath)
-$bmp = New-Object System.Drawing.Bitmap 192, 192
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-$g.DrawImage($src, 0, 0, 192, 192)
-New-Item -ItemType Directory -Force "$here\res\mipmap-xxxhdpi" | Out-Null
-$bmp.Save("$here\res\mipmap-xxxhdpi\ic_launcher.png", [System.Drawing.Imaging.ImageFormat]::Png)
-$g.Dispose(); $bmp.Dispose(); $src.Dispose()
+Write-Host '1/7 icons (node tools/make-icon.mjs -> build/ + android res)'
+Push-Location "$here\.."
+& node tools\make-icon.mjs
+if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'make-icon failed' }
+Pop-Location
 
 Write-Host '2/7 aapt2 compile'
 & "$bt\aapt2.exe" compile --dir "$here\res" -o "$work\res.zip"

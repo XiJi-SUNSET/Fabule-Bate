@@ -1,0 +1,51 @@
+# Fabula Board APK 构建（云端，替代本地 Android SDK 环境）
+# 触发：android/ 或图标源变动推送 master、手动 workflow_dispatch、打 tag（附到 Release）
+name: Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'android/**'
+      - 'tools/make-icon.mjs'
+      - '.github/workflows/android.yml'
+    tags: ['v*']
+
+permissions:
+  contents: write   # tag 时 gh release 需要写入
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK components
+        run: |
+          # runner 镜像自带 cmdline-tools；licenses 若缺失则补接受（幂等）
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Build APK
+        run: bash android/build-apk.sh
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fabula-Board-APK
+          path: android/build/Fabula-Board.apk
+          if-no-files-found: error
+
+      - name: Attach to release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --generate-notes android/build/Fabula-Board.apk \
+            || gh release upload "$GITHUB_REF_NAME" android/build/Fabula-Board.apk --clobber
