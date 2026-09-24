@@ -13,7 +13,10 @@ echo '== 2. systemd 单元'
 sudo cp /tmp/fabula-board.service /etc/systemd/system/fabula-board.service
 sudo systemctl daemon-reload
 sudo systemctl reset-failed fabula-board 2>/dev/null || true
-sudo systemctl enable --now fabula-board
+sudo systemctl enable fabula-board
+# 必须 restart（不是 enable --now）：对已运行的服务 enable --now 不重启，
+# 会出现"文件更新了但进程还在跑旧代码"的幽灵故障（实测踩到）
+sudo systemctl restart fabula-board
 sleep 2
 systemctl is-active fabula-board || (sudo journalctl -u fabula-board -n 20 --no-pager; exit 1)
 
