@@ -8,3 +8,7 @@ montage.json.lock
 
 # Fabula Board 服务端数据（含访问 secret，绝不入仓）
 server/data/
+
+# Android 构建中间产物与 APK 输出（工程源码与密钥库入仓，产物不入仓）
+android/.work/
+android/build/
