@@ -212,7 +212,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         rest = parts[3:]
         if rest == [] or rest == ['']:
-            self._send(200, PAGE_HTML.replace('__K__', SECRET).encode('utf-8'), 'text/html; charset=utf-8', 'no-store')
+            # 页面不再内嵌密钥：API 基址由页面 location 推导（分享 HTML 也不泄密）
+            self._send(200, PAGE_HTML.encode('utf-8'), 'text/html; charset=utf-8', 'no-store')
             return
         if rest == ['api', 'board']:
             b = read_board()
@@ -524,8 +525,11 @@ footer{color:var(--dim);font-size:11.5px;text-align:center;margin-top:22px}
 <input type="file" id="pick" accept="image/*" style="display:none">
 <script>
 (function(){
-  var K = '__K__';
-  var BASE = '/s/' + K + '/';
+  /* API 基址从页面自身路径推导（补尾斜杠）：线上挂在 /fabula-board/ 前缀下、
+     本地直连无前缀，两种形态都正确 —— 此前写死 '/s/...' 绝对路径，
+     线上请求打到 Nginx 静态根（404 HTML 页），fetch 解析 JSON 爆
+     "Unexpected token '<'"。 */
+  var BASE = location.pathname.replace(/\/?$/, '/');
   var curNo = 0, curBtn = null;
   var FIELDS = ['画面内容','对白','音效','景别','运镜','焦段','转场','备注'];
   function $(id){ return document.getElementById(id); }
