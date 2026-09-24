@@ -527,12 +527,14 @@
         MTG.settings.set('boardSecret', secret);
         const r = await exp.publishBoard(server, secret, payload);
         if (r && r.ok) {
-          if (st) st.textContent = '已发布 ' + r.shots + ' 镜 ✓ 打开下方固定入口即可浏览';
+          if (st) st.textContent = '已发布 ' + r.shots + ' 镜 ✓ 手机打开下方链接即可浏览';
           const li = document.getElementById('pub-link');
           if (li) li.value = r.url || '';
+          const lid = document.getElementById('pub-link-direct');
+          if (lid) lid.value = r.direct || '';
           const lw = document.getElementById('pub-linkwrap');
           if (lw) lw.classList.remove('hidden');
-          MTG.toast('已发布：手机打开固定入口即可浏览');
+          MTG.toast('已发布：手机打开链接即可浏览');
         } else {
           const msg = (r && r.error) || '未知错误';
           if (st) st.textContent = '发布失败：' + msg;

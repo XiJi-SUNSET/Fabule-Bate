@@ -945,8 +945,10 @@ ipcMain.handle('publish:board', async (_e, server, secret, payload) => {
     if (!resp.ok || !j || j.ok !== true) {
       return { ok: false, error: (j && j.error) || ('HTTP ' + resp.status) };
     }
-    /* 返回固定入口（不带密钥）：手机收藏这一个地址即可；密钥首次打开时输一次 */
-    return { ok: true, shots: j.shots, url: u.origin + '/fabula-board/' };
+    /* 两种链接都给：
+       url    = 固定入口（短，首次打开输一次密钥）
+       direct = 直达链接（含密钥，零输入，存书签/加主屏即用；链接本身即凭证） */
+    return { ok: true, shots: j.shots, url: u.origin + '/fabula-board/', direct: base };
   } catch (e) {
     return { ok: false, error: '连接失败：' + ((e && e.message) || String(e)) };
   }
