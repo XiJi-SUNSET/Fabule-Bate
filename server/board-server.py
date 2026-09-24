@@ -40,7 +40,23 @@ MAX_IMG_BYTES = 8 * 1024 * 1024      # 单图上限
 MAX_NOTE = 2000                      # 便签字数上限
 MAX_SHOTS = 500
 
-IMG_NAME_RE = re.compile(r'^\d{1,4}\.png$')     # 只接受 NN.png（服务端自生成名）
+IMG_NAME_RE = re.compile(r'^\d{1,4}\.png$')     # 发布时按序号生成
+# 编辑期图片名（替换空镜时生成 u<hex>.png）：字符白名单 + 无路径分隔 + 不以点开头
+IMG_FILE_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.png$')
+
+
+def img_content_type(buf):
+    """按魔数给 MIME：客户端替换上传的是压缩后的 JPEG，但文件名统一 .png
+       （nosniff 下内容与声明必须一致，否则浏览器可能拒绝渲染）。"""
+    if buf[:8] == b'\x89PNG\r\n\x1a\n':
+        return 'image/png'
+    if buf[:3] == b'\xff\xd8\xff':
+        return 'image/jpeg'
+    if buf[:3] == b'GIF':
+        return 'image/gif'
+    if buf[:4] == b'RIFF' and buf[8:12] == b'WEBP':
+        return 'image/webp'
+    return 'application/octet-stream'
 
 _lock = threading.Lock()
 
@@ -128,6 +144,35 @@ def sanitize_field(v):
         return ''
     s = str(v)
     return s[:2000]
+
+
+def new_shot_id():
+    return 'u' + secrets.token_hex(4)
+
+
+def ensure_ids(board):
+    """旧数据补稳定 id（排序/删除后定位不再依赖序号）。返回是否发生过补写。"""
+    changed = False
+    for s in board.get('shots') or []:
+        if isinstance(s, dict) and not s.get('id'):
+            s['id'] = new_shot_id()
+            changed = True
+    return changed
+
+
+def find_shot(board, body):
+    """编辑类接口的定位：优先 id，兼容旧式 1-based no。"""
+    sid = body.get('id')
+    if isinstance(sid, str) and sid:
+        for s in board.get('shots') or []:
+            if s.get('id') == sid:
+                return s
+        return None
+    no = clip_no(body.get('no'), 1, MAX_SHOTS)
+    shots = board.get('shots') or []
+    if no is not None and 1 <= no <= len(shots):
+        return shots[no - 1]
+    return None
 
 
 def clip_no(v, lo, hi):
@@ -220,11 +265,18 @@ class Handler(BaseHTTPRequestHandler):
             if b is None:
                 self._json(200, {'empty': True})
             else:
+                # 旧数据（无稳定 id）首次读取即补写：页面的编辑操作依赖 id
+                with _lock:
+                    if ensure_ids(b):
+                        try:
+                            write_board(b)
+                        except OSError:
+                            pass
                 self._json(200, b)
             return
         if len(rest) == 2 and rest[0] == 'img':
             name = rest[1]
-            if not IMG_NAME_RE.match(name):
+            if not IMG_FILE_RE.match(name):
                 self._not_found()
                 return
             p = os.path.join(IMG_DIR, name)
@@ -234,7 +286,7 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 self._not_found()
                 return
-            self._send(200, buf, 'image/png', 'no-cache')
+            self._send(200, buf, img_content_type(buf), 'no-cache')
             return
         self._not_found()
 
@@ -252,6 +304,14 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_replace()
         elif rest == ['api', 'note']:
             self._handle_note()
+        elif rest == ['api', 'shot', 'add']:
+            self._handle_shot_add()
+        elif rest == ['api', 'shot', 'remove']:
+            self._handle_shot_remove()
+        elif rest == ['api', 'shot', 'move']:
+            self._handle_shot_move()
+        elif rest == ['api', 'shot', 'update']:
+            self._handle_shot_update()
         else:
             self._not_found()
 
@@ -266,40 +326,40 @@ class Handler(BaseHTTPRequestHandler):
             return
         with _lock:
             old = read_board() or {}
-            old_by_no = {}
-            for s in (old.get('shots') or []):
-                if isinstance(s, dict) and isinstance(s.get('no'), int):
-                    old_by_no[s['no']] = s
+            old_list = old.get('shots') if isinstance(old.get('shots'), list) else []
             shots_out = []
             os.makedirs(IMG_DIR, exist_ok=True)
             for i, s in enumerate(shots_in, 1):
                 if not isinstance(s, dict):
                     continue
-                no = clip_no(s.get('no', i), 1, MAX_SHOTS) or i
+                # 旧数据按"位置"匹配（网页端的便签/替换在重新发布时尽量保留；无法匹配则重来）
+                keep = old_list[i - 1] if i - 1 < len(old_list) and isinstance(old_list[i - 1], dict) else None
+                sid = (keep or {}).get('id') or new_shot_id()
                 img = decode_data_url(s.get('img'), MAX_IMG_BYTES)
-                name = '%02d.png' % no
-                keep = old_by_no.get(no)
+                name = '%02d.png' % i
                 if img is not None:
                     write_atomic(os.path.join(IMG_DIR, name), img)
                     # 同名旧图若来自更早一次发布，首次见到时留一份 orig 备份
-                    if old and not os.path.exists(os.path.join(IMG_DIR, '%02d.orig.png' % no)):
+                    if old and not os.path.exists(os.path.join(IMG_DIR, '%02d.orig.png' % i)):
                         try:
                             with open(os.path.join(IMG_DIR, name), 'rb') as f:
-                                write_atomic(os.path.join(IMG_DIR, '%02d.orig.png' % no), f.read())
+                                write_atomic(os.path.join(IMG_DIR, '%02d.orig.png' % i), f.read())
                         except OSError:
                             pass
                     replaced = False
                     note = sanitize_field((keep or {}).get('note'))
                 elif keep and keep.get('img'):
                     # 本次没带图（理论上发布都带）：沿用旧图与旧状态
+                    name = str(keep.get('img'))[:96]
                     replaced = bool(keep.get('replaced'))
                     note = sanitize_field(keep.get('note'))
                 else:
+                    name = ''
                     replaced = False
                     note = sanitize_field(s.get('note'))
                 fields = s.get('fields') if isinstance(s.get('fields'), dict) else {}
                 shots_out.append({
-                    'no': no,
+                    'id': sid,
                     'dur': sanitize_field(s.get('dur'))[:32],
                     'fields': {str(k)[:32]: sanitize_field(v) for k, v in list(fields.items())[:24]},
                     'img': name,
@@ -321,23 +381,26 @@ class Handler(BaseHTTPRequestHandler):
         if body is None:
             self._json(400, {'error': 'bad json'})
             return
-        no = clip_no(body.get('no'), 1, MAX_SHOTS)
         img = decode_data_url(body.get('dataUrl'), MAX_IMG_BYTES)
-        if no is None or img is None:
-            self._json(400, {'error': 'bad image or no'})
+        if img is None:
+            self._json(400, {'error': 'bad image'})
             return
         with _lock:
             b = read_board()
             if b is None:
                 self._json(404, {'error': 'board empty'})
                 return
-            target = next((s for s in b.get('shots', []) if s.get('no') == no), None)
+            ensure_ids(b)
+            target = find_shot(b, body)
             if target is None:
                 self._json(404, {'error': 'shot not found'})
                 return
-            name = '%02d.png' % no
+            # 图名跟随 img 字段（空镜替换时生成稳定的随机名，排序/删除后不再错位）
+            name = str(target.get('img') or '')
+            if not IMG_FILE_RE.match(name):
+                name = 'u%s.png' % secrets.token_hex(4)
             cur = os.path.join(IMG_DIR, name)
-            orig = os.path.join(IMG_DIR, '%02d.orig.png' % no)
+            orig = os.path.join(IMG_DIR, (name[:-4] if name.endswith('.png') else name) + '.orig.png')
             if os.path.exists(cur) and not os.path.exists(orig):
                 try:
                     with open(cur, 'rb') as f:
@@ -349,16 +412,12 @@ class Handler(BaseHTTPRequestHandler):
             target['replaced'] = True
             target['at'] = int(time.time() * 1000)
             write_board(b)
-        self._json(200, {'ok': True, 'no': no})
+        self._json(200, {'ok': True})
 
     def _handle_note(self):
         body = self._read_json()
         if body is None:
             self._json(400, {'error': 'bad json'})
-            return
-        no = clip_no(body.get('no'), 1, MAX_SHOTS)
-        if no is None:
-            self._json(400, {'error': 'bad no'})
             return
         text = sanitize_field(body.get('text'))[:MAX_NOTE]
         with _lock:
@@ -366,13 +425,120 @@ class Handler(BaseHTTPRequestHandler):
             if b is None:
                 self._json(404, {'error': 'board empty'})
                 return
-            target = next((s for s in b.get('shots', []) if s.get('no') == no), None)
+            ensure_ids(b)
+            target = find_shot(b, body)
             if target is None:
                 self._json(404, {'error': 'shot not found'})
                 return
             target['note'] = text
             write_board(b)
-        self._json(200, {'ok': True, 'no': no})
+        self._json(200, {'ok': True})
+
+    # ---------- 分镜编辑（增删 / 排序 / 文案；全部只动服务器副本） ----------
+
+    def _handle_shot_add(self):
+        body = self._read_json() or {}
+        after_id = body.get('afterId') if isinstance(body.get('afterId'), str) else None
+        with _lock:
+            b = read_board()
+            if b is None or not isinstance(b.get('shots'), list):
+                self._json(404, {'error': 'board empty'})
+                return
+            ensure_ids(b)
+            shot = {'id': new_shot_id(), 'dur': '', 'fields': {}, 'img': '',
+                    'replaced': False, 'at': None, 'note': ''}
+            idx = len(b['shots'])
+            if after_id:
+                for i, s in enumerate(b['shots']):
+                    if s.get('id') == after_id:
+                        idx = i + 1
+                        break
+            b['shots'].insert(idx, shot)
+            b['updatedAt'] = int(time.time() * 1000)
+            write_board(b)
+        self._json(200, {'ok': True, 'id': shot['id'], 'index': idx})
+
+    def _handle_shot_remove(self):
+        body = self._read_json() or {}
+        sid = body.get('id')
+        if not isinstance(sid, str) or not sid:
+            self._json(400, {'error': 'bad id'})
+            return
+        with _lock:
+            b = read_board()
+            if b is None or not isinstance(b.get('shots'), list):
+                self._json(404, {'error': 'board empty'})
+                return
+            ensure_ids(b)
+            before = len(b['shots'])
+            gone = next((s for s in b['shots'] if s.get('id') == sid), None)
+            b['shots'] = [s for s in b['shots'] if s.get('id') != sid]
+            if len(b['shots']) == before:
+                self._json(404, {'error': 'shot not found'})
+                return
+            # 清理该分镜专属的图片文件（安全：文件名过白名单；不存在则忽略）
+            img = str((gone or {}).get('img') or '')
+            if img and IMG_FILE_RE.match(img):
+                base = img[:-4] if img.lower().endswith('.png') else img
+                for fn in (img, base + '.orig.png'):
+                    try:
+                        os.remove(os.path.join(IMG_DIR, fn))
+                    except OSError:
+                        pass
+            b['updatedAt'] = int(time.time() * 1000)
+            write_board(b)
+        self._json(200, {'ok': True})
+
+    def _handle_shot_move(self):
+        body = self._read_json() or {}
+        sid = body.get('id')
+        d = body.get('dir')
+        if not isinstance(sid, str) or d not in ('up', 'down'):
+            self._json(400, {'error': 'bad args'})
+            return
+        with _lock:
+            b = read_board()
+            if b is None or not isinstance(b.get('shots'), list):
+                self._json(404, {'error': 'board empty'})
+                return
+            ensure_ids(b)
+            shots = b['shots']
+            i = next((k for k, s in enumerate(shots) if s.get('id') == sid), -1)
+            if i < 0:
+                self._json(404, {'error': 'shot not found'})
+                return
+            j = i - 1 if d == 'up' else i + 1
+            if 0 <= j < len(shots):
+                shots[i], shots[j] = shots[j], shots[i]
+            b['updatedAt'] = int(time.time() * 1000)
+            write_board(b)
+        self._json(200, {'ok': True})
+
+    def _handle_shot_update(self):
+        body = self._read_json() or {}
+        fields = body.get('fields')
+        if not isinstance(fields, dict):
+            self._json(400, {'error': 'bad fields'})
+            return
+        with _lock:
+            b = read_board()
+            if b is None or not isinstance(b.get('shots'), list):
+                self._json(404, {'error': 'board empty'})
+                return
+            ensure_ids(b)
+            target = find_shot(b, body)
+            if target is None:
+                self._json(404, {'error': 'shot not found'})
+                return
+            nf = dict(target.get('fields') or {})
+            for k, v in list(fields.items())[:24]:
+                nf[str(k)[:32]] = sanitize_field(v)
+            target['fields'] = nf
+            if 'dur' in body:
+                target['dur'] = sanitize_field(body.get('dur'))[:32]
+            b['updatedAt'] = int(time.time() * 1000)
+            write_board(b)
+        self._json(200, {'ok': True})
 
     # ---------- 还原原图（可选能力） ----------
     def do_DELETE(self):
@@ -383,28 +549,33 @@ class Handler(BaseHTTPRequestHandler):
             return
         rest = parts[3:]
         if rest == ['api', 'replace']:
-            body = self._read_json()
-            no = clip_no((body or {}).get('no'), 1, MAX_SHOTS)
-            if no is None:
-                self._json(400, {'error': 'bad no'})
-                return
+            body = self._read_json() or {}
             with _lock:
                 b = read_board() or {'shots': []}
-                target = next((s for s in b.get('shots', []) if s.get('no') == no), None)
-                orig = os.path.join(IMG_DIR, '%02d.orig.png' % no)
-                if target is None or not os.path.exists(orig):
-                    self._json(404, {'error': 'no original'})
+                ensure_ids(b)
+                target = find_shot(b, body)
+                if target is None:
+                    self._json(404, {'error': 'shot not found'})
                     return
-                try:
-                    with open(orig, 'rb') as f:
-                        write_atomic(os.path.join(IMG_DIR, '%02d.png' % no), f.read())
-                except OSError:
-                    self._json(500, {'error': 'io'})
-                    return
-                target['replaced'] = False
-                target['at'] = None
+                img = str(target.get('img') or '')
+                orig = os.path.join(IMG_DIR, img[:-4] + '.orig.png') if img.lower().endswith('.png') else ''
+                if img and orig and os.path.exists(orig):
+                    # 有发布原图备份：恢复它
+                    try:
+                        with open(orig, 'rb') as f:
+                            write_atomic(os.path.join(IMG_DIR, img), f.read())
+                    except OSError:
+                        self._json(500, {'error': 'io'})
+                        return
+                    target['replaced'] = False
+                    target['at'] = None
+                else:
+                    # 替换前本来就是空镜（无 orig）：退回空镜
+                    target['img'] = ''
+                    target['replaced'] = False
+                    target['at'] = None
                 write_board(b)
-            self._json(200, {'ok': True, 'no': no})
+            self._json(200, {'ok': True})
             return
         self._not_found()
 
@@ -508,9 +679,19 @@ h1{font-size:19px;font-weight:650}
 .note{margin:0 12px 10px;padding:8px 10px;border-radius:8px;background:rgba(255,255,255,.04);border:1px dashed var(--line);font-size:13px;color:var(--dim)}
 .note.has{color:var(--tx);border-style:solid;border-color:rgba(var(--red-rgb),.45)}
 .ops{display:flex;gap:8px;padding:0 12px 12px}
+.ops.sub{padding-top:0}
 .btn{flex:1;height:38px;border:1px solid var(--line);border-radius:9px;background:rgba(255,255,255,.05);color:var(--tx);font:inherit;font-size:13.5px;cursor:pointer}
 .btn.p{background:var(--red);border-color:var(--red);color:#fff;font-weight:600}
+.btn.sm{height:32px;font-size:12.5px;border-radius:8px}
+.btn.danger{color:#ffb3a1;border-color:rgba(var(--red-rgb),.45)}
+.btn.big{height:44px;font-size:14px}
 .btn:active{opacity:.85}
+.edit{padding:2px 12px 8px}
+.ef{display:block;margin:7px 0}
+.ef span{display:block;font-size:12px;color:var(--dim);margin-bottom:3px}
+.ef textarea{width:100%;background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:7px;color:var(--tx);font:inherit;font-size:13px;line-height:1.5;padding:6px 8px;resize:vertical;outline:none}
+.ef textarea:focus{border-color:rgba(var(--red-rgb),.6)}
+.addwrap{padding:2px 0 8px}
 #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#332c27;border:1px solid var(--line);color:var(--tx);padding:9px 16px;border-radius:9px;font-size:13px;max-width:86%;z-index:9;display:none}
 #toast.err{border-color:rgba(var(--red-rgb),.7);color:#ffb3a1}
 .empty{color:var(--dim);text-align:center;padding:48px 12px;font-size:14px;line-height:2}
@@ -530,7 +711,7 @@ footer{color:var(--dim);font-size:11.5px;text-align:center;margin-top:22px}
      线上请求打到 Nginx 静态根（404 HTML 页），fetch 解析 JSON 爆
      "Unexpected token '<'"。 */
   var BASE = location.pathname.replace(/\/?$/, '/');
-  var curNo = 0, curBtn = null;
+  var curId = '', curBtn = null;
   var FIELDS = ['画面内容','对白','音效','景别','运镜','焦段','转场','备注'];
   function $(id){ return document.getElementById(id); }
   var toastT = null;
@@ -559,72 +740,130 @@ footer{color:var(--dim);font-size:11.5px;text-align:center;margin-top:22px}
     fr.onerror = function(){ cb(null); };
     fr.readAsDataURL(file);
   }
+  var FIELDS8 = ['画面内容', '对白', '音效', '景别', '运镜', '焦段', '转场', '备注'];
+  function mkBtn(label, cls, fn){
+    var b = document.createElement('button');
+    b.className = 'btn' + (cls ? ' ' + cls : '');
+    b.textContent = label;
+    b.onclick = fn;
+    return b;
+  }
+  function act(path, body, okMsg){
+    api(path, { method: 'POST', body: JSON.stringify(body) })
+      .then(function(){ toast(okMsg || '完成'); load(); })
+      .catch(function(e){ toast('操作失败：' + e.message, true); });
+  }
   function render(b){
+    var shots = b.shots || [];
     $('t').textContent = b.name || '故事板';
-    $('m').textContent = (b.shots || []).length + ' 镜 · ' + new Date(b.updatedAt || Date.now()).toLocaleString('zh-CN');
+    $('m').textContent = shots.length + ' 镜 · ' + new Date(b.updatedAt || Date.now()).toLocaleString('zh-CN');
     var list = $('list'); list.innerHTML = '';
-    if (!b.shots || !b.shots.length) { list.innerHTML = '<div class="empty">服务器上还没有内容<br>在 Fabula 里点「发布到服务器」</div>'; return; }
-    b.shots.forEach(function(s){
+    if (!shots.length) {
+      list.innerHTML = '<div class="empty">服务器上还没有内容<br>在 Fabula 里点「发布到服务器」<br>或点下方「＋ 添加分镜」</div>';
+    }
+    shots.forEach(function(s, idx){
+      var no = idx + 1;
       var card = document.createElement('div'); card.className = 'card';
       var imw = document.createElement('div'); imw.className = 'imgw';
-      var im = document.createElement('img');
-      im.loading = 'lazy'; im.src = BASE + 'img/' + s.img + '?t=' + (s.at || b.updatedAt || 0);
-      im.alt = '镜 ' + s.no;
-      imw.appendChild(im);
+      if (s.img) {
+        var im = document.createElement('img');
+        im.loading = 'lazy'; im.src = BASE + 'img/' + s.img + '?t=' + (s.at || b.updatedAt || 0);
+        im.alt = '镜 ' + no;
+        imw.appendChild(im);
+      } else {
+        var ph = document.createElement('div'); ph.className = 'ph'; ph.textContent = '（空镜 · 点「替换图」上传画面）';
+        imw.appendChild(ph);
+      }
       if (s.replaced) { var bd = document.createElement('span'); bd.className = 'badge'; bd.textContent = '已替换'; imw.appendChild(bd); }
       card.appendChild(imw);
       var hd = document.createElement('div'); hd.className = 'hd';
-      hd.innerHTML = '<span>镜 ' + s.no + '</span><span class="dur">' + (s.dur || '') + '</span>';
+      hd.innerHTML = '<span>镜 ' + no + '</span><span class="dur">' + (s.dur || '') + '</span>';
       card.appendChild(hd);
       var fl = document.createElement('div'); fl.className = 'fields';
       var keys = Object.keys(s.fields || {});
+      var shown = 0;
       keys.forEach(function(k){
         if (!s.fields[k]) return;
+        shown++;
         var row = document.createElement('div'); row.className = 'frow';
         var kk = document.createElement('span'); kk.className = 'k'; kk.textContent = k;
         var vv = document.createElement('span'); vv.className = 'v'; vv.textContent = s.fields[k];
         row.appendChild(kk); row.appendChild(vv); fl.appendChild(row);
       });
-      if (!keys.length) { var nf = document.createElement('div'); nf.className = 'frow'; nf.innerHTML = '<span class="k"></span><span class="v" style="color:var(--dim)">（无描述）</span>'; fl.appendChild(nf); }
+      if (!shown) {
+        var nf = document.createElement('div');
+        nf.className = 'frow'; nf.style.color = 'var(--dim)'; nf.style.fontSize = '13px';
+        nf.textContent = '（无描述 · 点「编辑文案」补充）';
+        fl.appendChild(nf);
+      }
       card.appendChild(fl);
       var note = document.createElement('div'); note.className = 'note' + (s.note ? ' has' : '');
-      note.textContent = s.note ? ('便签：' + s.note) : '便签：点下方「想法」随手记一条';
+      note.textContent = s.note ? ('便签：' + s.note) : '便签：点「想法」随手记一条';
       card.appendChild(note);
+      /* 编辑区（默认隐藏） */
+      var ed = document.createElement('div'); ed.className = 'edit'; ed.style.display = 'none';
+      var tas = {};
+      FIELDS8.forEach(function(label){
+        var w = document.createElement('label'); w.className = 'ef';
+        var t = document.createElement('span'); t.textContent = label;
+        var ta = document.createElement('textarea'); ta.rows = 2;
+        ta.value = (s.fields && s.fields[label]) || '';
+        tas[label] = ta;
+        w.appendChild(t); w.appendChild(ta); ed.appendChild(w);
+      });
+      var eops = document.createElement('div'); eops.className = 'ops';
+      eops.appendChild(mkBtn('保存', 'p', function(){
+        var o = {};
+        FIELDS8.forEach(function(k){ o[k] = tas[k].value; });
+        act('api/shot/update', { id: s.id, fields: o }, '已保存文案');
+      }));
+      eops.appendChild(mkBtn('取消', '', function(){ ed.style.display = 'none'; }));
+      ed.appendChild(eops);
+      card.appendChild(ed);
+      /* 操作区两行：常用一行 + 结构编辑一行 */
       var ops = document.createElement('div'); ops.className = 'ops';
-      var b1 = document.createElement('button'); b1.className = 'btn'; b1.textContent = '替换此镜';
-      b1.onclick = function(){ curNo = s.no; curBtn = b1; $('pick').click(); };
-      var b2 = document.createElement('button'); b2.className = 'btn'; b2.textContent = '想法';
-      b2.onclick = function(){
-        var t = prompt('镜 ' + s.no + ' 的临时想法（只存服务器）', s.note || '');
+      var b1 = mkBtn('替换图', '', function(){ curId = s.id; curBtn = b1; $('pick').click(); });
+      var b2 = mkBtn('想法', '', function(){
+        var t = prompt('镜 ' + no + ' 的临时想法（只存服务器）', s.note || '');
         if (t === null) return;
-        api('api/note', { method: 'POST', body: JSON.stringify({ no: s.no, text: t }) })
-          .then(function(){ toast('已保存便签'); load(); })
-          .catch(function(e){ toast('保存失败：' + e.message, true); });
-      };
-      var b3 = document.createElement('button'); b3.className = 'btn'; b3.textContent = '还原';
-      b3.style.display = s.replaced ? '' : 'none';
-      b3.onclick = function(){
-        if (!confirm('退回导出时的原图？')) return;
-        api('api/replace', { method: 'DELETE', body: JSON.stringify({ no: s.no }) })
+        act('api/note', { id: s.id, text: t }, '已保存便签');
+      });
+      var b3 = mkBtn('编辑文案', '', function(){ ed.style.display = (ed.style.display === 'none') ? '' : 'none'; });
+      var b4 = mkBtn('还原', '', function(){
+        if (!confirm('退回发布时的原图？')) return;
+        api('api/replace', { method: 'DELETE', body: JSON.stringify({ id: s.id }) })
           .then(function(){ toast('已还原'); load(); })
           .catch(function(e){ toast('还原失败：' + e.message, true); });
-      };
-      ops.appendChild(b1); ops.appendChild(b2); ops.appendChild(b3);
+      });
+      b4.style.display = s.replaced ? '' : 'none';
+      ops.appendChild(b1); ops.appendChild(b2); ops.appendChild(b3); ops.appendChild(b4);
       card.appendChild(ops);
+      var ops2 = document.createElement('div'); ops2.className = 'ops sub';
+      ops2.appendChild(mkBtn('＋ 在其后插入', 'sm', function(){ act('api/shot/add', { afterId: s.id }, '已插入新分镜'); }));
+      ops2.appendChild(mkBtn('↑ 上移', 'sm', function(){ act('api/shot/move', { id: s.id, dir: 'up' }, '已上移'); }));
+      ops2.appendChild(mkBtn('↓ 下移', 'sm', function(){ act('api/shot/move', { id: s.id, dir: 'down' }, '已下移'); }));
+      ops2.appendChild(mkBtn('删除', 'sm danger', function(){
+        if (!confirm('删除镜 ' + no + '？（只删服务器副本）')) return;
+        act('api/shot/remove', { id: s.id }, '已删除');
+      }));
+      card.appendChild(ops2);
       list.appendChild(card);
     });
+    var addWrap = document.createElement('div'); addWrap.className = 'addwrap';
+    addWrap.appendChild(mkBtn('＋ 添加分镜（追加到末尾）', 'p big', function(){ act('api/shot/add', {}, '已添加分镜'); }));
+    list.appendChild(addWrap);
   }
   function load(){ api('api/board').then(render).catch(function(e){ toast('加载失败：' + e.message, true); }); }
   $('pick').addEventListener('change', function(){
     var f = this.files && this.files[0]; this.value = '';
-    if (!f || !curNo) return;
+    if (!f || !curId) return;
     if (curBtn) { curBtn.disabled = true; curBtn.textContent = '上传中…'; }
     compress(f, function(dataUrl){
-      if (!dataUrl) { toast('图片读取失败', true); if (curBtn){ curBtn.disabled = false; curBtn.textContent = '替换此镜'; } return; }
-      api('api/replace', { method: 'POST', body: JSON.stringify({ no: curNo, dataUrl: dataUrl }) })
+      if (!dataUrl) { toast('图片读取失败', true); if (curBtn){ curBtn.disabled = false; curBtn.textContent = '替换图'; } return; }
+      api('api/replace', { method: 'POST', body: JSON.stringify({ id: curId, dataUrl: dataUrl }) })
         .then(function(){ toast('已替换（仅服务器副本）'); load(); })
         .catch(function(e){ toast('替换失败：' + e.message, true); });
-      setTimeout(function(){ if (curBtn){ curBtn.disabled = false; curBtn.textContent = '替换此镜'; } }, 1200);
+      setTimeout(function(){ if (curBtn){ curBtn.disabled = false; curBtn.textContent = '替换图'; } }, 1200);
     });
   });
   load();
