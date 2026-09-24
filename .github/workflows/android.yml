@@ -1,5 +1,5 @@
 # Fabula Board APK 构建（云端，替代本地 Android SDK 环境）
-# 触发：android/ 或图标源变动推送 master、手动 workflow_dispatch、打 tag（附到 Release）
+# 触发：android/ 或图标源变动推送 master、手动 workflow_dispatch、GitHub Release 创建（附 APK）
 name: Android APK
 
 on:
@@ -10,10 +10,11 @@ on:
       - 'android/**'
       - 'tools/make-icon.mjs'
       - '.github/workflows/android.yml'
-    tags: ['v*']
+  release:
+    types: [created]
 
 permissions:
-  contents: write   # tag 时 gh release 需要写入
+  contents: write   # release 上传需要写入
 
 jobs:
   apk:
@@ -26,11 +27,25 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Android SDK components
+      - name: Ensure Android SDK components
         run: |
-          # runner 镜像自带 cmdline-tools；licenses 若缺失则补接受（幂等）
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          # runner 镜像通常已含 android-34 / build-tools;34.0.0（licenses 已接受）；
+          # 缺失时才走 sdkmanager（其不在默认 PATH，需用完整路径探测）
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ -f "$SDK/platforms/android-34/android.jar" ] && [ -x "$SDK/build-tools/34.0.0/aapt2" ]; then
+            echo "android-34 + build-tools;34.0.0 already present on runner"
+          else
+            SDKMGR="$SDK/cmdline-tools/latest/bin/sdkmanager"
+            if [ ! -x "$SDKMGR" ]; then
+              SDKMGR="$(find "$SDK" -maxdepth 4 -name sdkmanager -type f 2>/dev/null | head -1)"
+            fi
+            [ -n "$SDKMGR" ] && [ -x "$SDKMGR" ] || { echo "sdkmanager not found under $SDK"; exit 1; }
+            echo "installing via $SDKMGR"
+            yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
+            "$SDKMGR" "platforms;android-34" "build-tools;34.0.0"
+          fi
+          echo "--- platforms:"; ls "$SDK/platforms"
+          echo "--- build-tools:"; ls "$SDK/build-tools"
 
       - name: Build APK
         run: bash android/build-apk.sh
@@ -42,10 +57,8 @@ jobs:
           path: android/build/Fabula-Board.apk
           if-no-files-found: error
 
-      - name: Attach to release (tags only)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Attach APK to release
+        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" --generate-notes android/build/Fabula-Board.apk \
-            || gh release upload "$GITHUB_REF_NAME" android/build/Fabula-Board.apk --clobber
+        run: gh release upload "$GITHUB_REF_NAME" android/build/Fabula-Board.apk --clobber
