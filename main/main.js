@@ -945,7 +945,8 @@ ipcMain.handle('publish:board', async (_e, server, secret, payload) => {
     if (!resp.ok || !j || j.ok !== true) {
       return { ok: false, error: (j && j.error) || ('HTTP ' + resp.status) };
     }
-    return { ok: true, shots: j.shots, url: base };
+    /* 返回固定入口（不带密钥）：手机收藏这一个地址即可；密钥首次打开时输一次 */
+    return { ok: true, shots: j.shots, url: u.origin + '/fabula-board/' };
   } catch (e) {
     return { ok: false, error: '连接失败：' + ((e && e.message) || String(e)) };
   }

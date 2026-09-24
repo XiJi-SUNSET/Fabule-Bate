@@ -12,6 +12,7 @@ sudo chmod 755 /opt/fabula-board/board-server.py
 echo '== 2. systemd 单元'
 sudo cp /tmp/fabula-board.service /etc/systemd/system/fabula-board.service
 sudo systemctl daemon-reload
+sudo systemctl reset-failed fabula-board 2>/dev/null || true
 sudo systemctl enable --now fabula-board
 sleep 2
 systemctl is-active fabula-board || (sudo journalctl -u fabula-board -n 20 --no-pager; exit 1)

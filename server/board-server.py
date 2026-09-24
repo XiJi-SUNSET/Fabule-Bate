@@ -201,6 +201,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {'ok': True, 'service': 'fabula-board'})
             return
         parts = self._norm_parts(u.path)
+        # 固定入口（不带密钥的地址，如 /fabula-board/）：门户页 —— 学 file-bridge 的
+        # "固定首页 + 页面自持密钥"模式：页面本体不含任何数据，密钥输一次存 localStorage，
+        # 之后打开同一个固定地址即直达最新内容（手机只需收藏这一个链接）。
+        if len(parts) <= 2:
+            self._send(200, PORTAL_HTML.encode('utf-8'), 'text/html; charset=utf-8', 'no-store')
+            return
         if not self._check_secret(parts):
             self._not_found()
             return
@@ -400,6 +406,77 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {'ok': True, 'no': no})
             return
         self._not_found()
+
+
+PORTAL_HTML = r'''<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1c1916">
+<title>Fabula 故事板</title>
+<style>
+:root{--red:#eb684b;--red-rgb:235,104,75;--bg:#1c1916;--card:#282320;--line:rgba(255,255,255,.09);--tx:#efe7dd;--dim:#a89c90}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--tx);font:15px/1.6 system-ui,"PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.wrap{width:100%;max-width:360px}
+.brand{font-size:22px;font-weight:650;letter-spacing:.5px}
+.sub{color:var(--dim);font-size:12.5px;margin:2px 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 16px}
+.t{font-size:14px;font-weight:600;margin-bottom:12px}
+input{width:100%;height:40px;background:rgba(0,0,0,.3);border:1px solid var(--line);border-radius:9px;color:var(--tx);font:inherit;padding:0 12px;outline:none}
+input:focus{border-color:rgba(var(--red-rgb),.6)}
+button{width:100%;height:42px;margin-top:12px;background:var(--red);border:0;border-radius:10px;color:#fff;font:inherit;font-weight:600;cursor:pointer}
+button:active{opacity:.85}
+.err{color:#ffb3a1;font-size:13px;margin-top:10px;min-height:18px}
+.hint{color:var(--dim);font-size:12px;line-height:1.8;margin-top:12px}
+#loading{color:var(--dim);text-align:center;padding:26px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">Fabula</div>
+  <div class="sub">故事板 · 手机端（固定入口）</div>
+  <div class="card" id="form">
+    <div class="t">输入访问密钥</div>
+    <input id="key" type="password" placeholder="在 Fabula 发布弹窗里查看" autocomplete="off">
+    <button id="go">进入</button>
+    <div class="err" id="err"></div>
+    <div class="hint">密钥只需输入一次。<br>本地址是固定入口，收藏它，每次打开直达最新发布。</div>
+  </div>
+  <div class="card" id="loading" style="display:none">正在进入…</div>
+</div>
+<script>
+(function(){
+  var $ = function(id){ return document.getElementById(id); };
+  var STORE = 'fabulaBoardKey';
+  function fail(msg){
+    $('form').style.display = ''; $('loading').style.display = 'none';
+    $('err').textContent = msg;
+  }
+  function enter(k){
+    $('form').style.display = 'none';
+    $('loading').style.display = '';
+    fetch('./s/' + encodeURIComponent(k) + '/api/board').then(function(r){
+      if (r.ok) {
+        try { localStorage.setItem(STORE, k); } catch (e) {}
+        location.replace('./s/' + encodeURIComponent(k) + '/');
+      } else {
+        fail('密钥不正确，请核对后重试');
+      }
+    }).catch(function(){ fail('连接失败，请稍后重试'); });
+  }
+  $('go').onclick = function(){ var v = $('key').value.trim(); if (v) enter(v); };
+  $('key').addEventListener('keydown', function(e){ if (e.key === 'Enter') $('go').onclick(); });
+  var saved = '';
+  try { saved = localStorage.getItem(STORE) || ''; } catch (e) {}
+  if (saved) enter(saved);      /* 已有密钥：打开固定地址即直达最新 */
+  else $('key').focus();
+})();
+</script>
+</body>
+</html>
+'''
 
 
 PAGE_HTML = r'''<!doctype html>

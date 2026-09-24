@@ -4,6 +4,10 @@
 [Unit]
 Description=Fabula Board (storyboard review service)
 After=network.target
+# 崩溃防护：60 秒内失败 5 次即停止重试
+# （首次安装时 data 目录尚未建，曾造成连续上万次重启 —— 教训固化在这里）
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 User=ecs-user
