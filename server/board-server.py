@@ -666,10 +666,10 @@ header{display:flex;align-items:baseline;gap:10px;margin:6px 2px 14px}
 h1{font-size:19px;font-weight:650}
 .meta{color:var(--dim);font-size:12px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:14px}
-.imgw{position:relative;background:#111}
+.imgw{position:relative;background:#fff}
 .imgw img{display:block;width:100%;height:auto}
 .badge{position:absolute;right:8px;top:8px;background:rgba(var(--red-rgb),.92);color:#fff;font-size:11px;padding:3px 9px;border-radius:99px}
-.ph{height:180px;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:13px}
+.ph{height:180px;display:flex;align-items:center;justify-content:center;color:#8f8880;font-size:13px}
 .hd{display:flex;justify-content:space-between;align-items:baseline;padding:10px 12px 4px;font-weight:650}
 .hd .dur{font-weight:400;font-size:12px;color:var(--dim)}
 .fields{padding:2px 12px 8px}
